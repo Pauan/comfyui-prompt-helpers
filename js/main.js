@@ -57,7 +57,21 @@ class Break {
     }
 
     render(root) {
-        return h("hr", (dom) => {});
+        return h("div", (dom) => {
+            dom.style.height = "1lh";
+
+            dom.style.display = "flex";
+            dom.style.flexDirection = "row";
+            dom.style.alignItems = "center";
+
+            dom.appendChild(h("div", (dom) => {
+                dom.style.width = "100%";
+                dom.style.height = "2px";
+                dom.style.border = "none";
+                dom.style.margin = "0px";
+                dom.style.backgroundColor = "hsl(207.3, 25%, 35%)";
+            }));
+        });
     }
 }
 
@@ -72,7 +86,9 @@ class Blank {
     }
 
     render(root) {
-        return h("br", (dom) => {});
+        return h("br", (dom) => {
+            dom.style.lineHeight = "1lh";
+        });
     }
 }
 
@@ -81,7 +97,7 @@ class Line {
     constructor(index, value) {
         this.index = index;
 
-        const comment = /^(\/\/)?(.*)$/.exec(value);
+        const comment = /^[ \t]*(\/\/)?(.*)$/.exec(value);
 
         if (comment[1]) {
             this.checked = false;
@@ -90,7 +106,7 @@ class Line {
             this.checked = true;
         }
 
-        const weight = /^[ \t]*\((.*):[ \t]*([\d\.]+)[ \t]*\)[\.,]*$/.exec(comment[2]);
+        const weight = /^[ \t]*\((.*):[ \t]*([\d\.]+)[ \t]*\)[\., \t]*$/.exec(comment[2]);
 
         if (weight) {
             this.weight = +weight[2];
@@ -103,21 +119,30 @@ class Line {
     }
 
     serialize() {
-        if (this.weight === 1.0) {
+        const weight = this.weight.toFixed(2);
+
+        if (weight === "1.00") {
             return `${this.checked ? "   " :  "// "} ${this.prompt},`;
 
         } else {
-            return `${this.checked ? "   " :  "// "}(${this.prompt}: ${this.weight.toFixed(2)}),`;
+            return `${this.checked ? "   " :  "// "}(${this.prompt},: ${weight})`;
         }
     }
 
     render(root) {
         return h("div", (dom) => {
+            let updateWeight;
+
             dom.style.display = "flex";
             dom.style.flexDirection = "row";
+            dom.style.alignItems = "center";
 
             dom.appendChild(h("input", (dom) => {
                 dom.setAttribute("type", "checkbox");
+
+                dom.style.width = "16px";
+                dom.style.height = "16px";
+                dom.style.margin = "0px";
 
                 if (this.checked) {
                     dom.setAttribute("checked", "");
@@ -137,34 +162,48 @@ class Line {
             }));
 
             dom.appendChild(h("span", (dom) => {
-                dom.textContent = this.weight.toFixed(2);
+                updateWeight = () => {
+                    const weight = this.weight.toFixed(2);
 
+                    dom.textContent = weight;
+
+                    if (weight === "1.00") {
+                        dom.style.opacity = "0.2";
+
+                    } else {
+                        dom.style.opacity = "";
+                    }
+                };
+
+                updateWeight();
+
+                dom.style.height = "1lh";
+                dom.style.marginLeft = "6px";
                 dom.style.marginRight = "6px";
             }));
 
             dom.appendChild(h("button", (dom) => {
-                dom.style.marginRight = "1px";
-
                 dom.tabIndex = "-1";
 
                 dom.style.width = "18px";
                 dom.style.height = "18px";
+                dom.style.margin = "0px";
+                dom.style.marginRight = "1px";
 
                 dom.style.cursor = "pointer";
 
                 dom.style.display = "flex";
                 dom.style.alignItems = "center";
                 dom.style.justifyContent = "center";
-                dom.style.verticalAlign = "middle";
 
-                dom.appendChild(h("span", (dom) => {
+                dom.appendChild(h("div", (dom) => {
                     dom.textContent = "-";
                 }));
 
                 dom.addEventListener("click", () => {
                     this.weight -= 0.05;
+                    updateWeight();
                     root.save();
-                    root.render();
                 });
             }));
 
@@ -173,22 +212,22 @@ class Line {
 
                 dom.style.width = "18px";
                 dom.style.height = "18px";
+                dom.style.margin = "0px";
 
                 dom.style.cursor = "pointer";
 
                 dom.style.display = "flex";
                 dom.style.alignItems = "center";
                 dom.style.justifyContent = "center";
-                dom.style.verticalAlign = "middle";
 
-                dom.appendChild(h("span", (dom) => {
+                dom.appendChild(h("div", (dom) => {
                     dom.textContent = "+";
                 }));
 
                 dom.addEventListener("click", () => {
                     this.weight += 0.05;
+                    updateWeight();
                     root.save();
-                    root.render();
                 });
             }));
         });
@@ -247,27 +286,91 @@ class PromptToggle {
     }
 
     renderEditBox() {
-        return h("textarea", (dom) => {
-            dom.value = this.editText;
+        return h("div", (dom) => {
+            dom.textContent = this.editText;
 
-            dom.style.display = "block";
+            // Textareas can't be dynamically resized, so we use contenteditable as a workaround
+            dom.setAttribute("contenteditable", "plaintext-only");
+            dom.setAttribute("placeholder", "Prompt...");
+
+            // Automatically focus the textbox
+            // We can't use autofocus because the textbox is dynamically generated
+            queueMicrotask(() => {
+                dom.focus();
+            });
+
+            dom.className = "comfy-multiline-input";
+
             dom.style.flex = "1";
+            dom.style.cursor = "text";
+            dom.style.border = "1px solid lightsteelblue";
+            dom.style.padding = "3px";
+            dom.style.overflow = "auto";
+
+            dom.style.caretColor = "crimson";
 
             dom.style.fontFamily = "inherit";
             dom.style.fontSize = "inherit";
             dom.style.lineHeight = "inherit";
-            dom.style.width = "100%";
-            dom.style.border = "1px solid gainsboro";
-            dom.style.borderRadius = "3px";
-            dom.style.margin = "0px";
-            dom.style.padding = "6px 8px";
-            dom.style.overflow = "auto";
-            dom.style.resize = "none";
+            dom.style.minHeight = "5lh";
+            dom.style.boxSizing = "content-box";
+            dom.style.backgroundColor = "hsl(240, 100%, 13%)";
+            dom.style.color = "white";
+            dom.style.borderRadius = "5px";
 
-            dom.rows = this.lines.length;
+            dom.addEventListener("input", (event) => {
+                this.editText = dom.textContent;
 
-            dom.addEventListener("input", () => {
-                this.editText = dom.value;
+                event.stopPropagation();
+            });
+
+            // These events are needed to stop ComfyUI from glitching out and causing problems
+            dom.addEventListener("contextmenu", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("mousedown", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("mousemove", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("mouseup", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("pointerdown", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("pointermove", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("pointerup", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("wheel", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("copy", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("paste", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("keydown", (event) => {
+                event.stopPropagation();
+            });
+
+            dom.addEventListener("keyup", (event) => {
+                event.stopPropagation();
             });
         });
     }
@@ -317,7 +420,7 @@ class PromptToggle {
         } else {
             this.root.appendChild(h("div", (dom) => {
                 dom.style.flex = "1";
-                dom.style.padding = "5px 0px";
+                dom.style.padding = "4px 0px";
                 dom.style.overflow = "auto";
 
                 this.lines.forEach((line) => {
@@ -335,27 +438,24 @@ app.registerExtension({
     name: "prompt_helpers: PromptToggle",
     nodeCreated(node) {
         if (node.comfyClass === "prompt_helpers: PromptToggle") {
-            console.log(node);
-
-            node.multiline = true;
-
             const textWidget = node.widgets[0];
 
+            textWidget.hidden = true;
             textWidget.options.hidden = true;
 
-            const widget = new PromptToggle(textWidget, textWidget.options.getValue());
+            const prompt = new PromptToggle(textWidget, textWidget.options.getValue());
 
             node.onConfigure = () => {
-                widget.replaceLines(textWidget.value);
-                widget.render();
+                prompt.replaceLines(textWidget.value);
+                prompt.render();
             };
 
-            widget.render();
+            prompt.render();
 
             node.addDOMWidget(
                 "prompt_helpers_prompt_toggle",
                 "prompt_helpers: PromptToggle",
-                widget.root,
+                prompt.root,
             );
         }
     }
