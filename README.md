@@ -13,7 +13,9 @@ Inspired by [Prompt Palette](https://github.com/kambara/ComfyUI-PromptPalette), 
 
 ## `Prompt Toggle` node
 
-The `conditioning/helpers/Prompt Toggle` node has several features to make your prompting life easier:
+![](https://github.com/Pauan/comfyui-prompt-helpers/blob/d9d4296cb84fee029c371f7ad46a958f6404b2a1/img/Prompt%20Helper.png)
+
+The `conditioning/helpers/Prompt Toggle` node is similar to `conditioning/CLIP Text Encode (Prompt)`, but enhanced with new features:
 
 * It supports `BREAK` which splits a single large prompt into multiple chunks.
 
