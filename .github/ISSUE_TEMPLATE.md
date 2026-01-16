@@ -1,5 +1,6 @@
 * Prompt Helpers version:
 * Python version:
+* ComfyUI version:
 * Operating System:
 
 ### Description

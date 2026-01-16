@@ -30,17 +30,17 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Pauan/prompt_helpers"
-BugTracker = "https://github.com/Pauan/prompt_helpers/issues"
-Documentation = "https://github.com/Pauan/prompt_helpers/wiki"
+Repository = "https://github.com/Pauan/comfyui-prompt-helpers"
+BugTracker = "https://github.com/Pauan/comfyui-prompt-helpers/issues"
+Documentation = "https://github.com/Pauan/comfyui-prompt-helpers/wiki"
 
 
 [tool.comfy]
-PublisherId = "Pauan"
+PublisherId = "pauan"
 DisplayName = "Prompt Helpers"
 Icon = ""
 Tags = []
-Repository = "https://github.com/Pauan/prompt_helpers"
+Repository = "https://github.com/Pauan/comfyui-prompt-helpers"
 includes = ["js"]
 
 [tool.setuptools.package-data]
