@@ -9,25 +9,29 @@ function h(tag, f) {
 
 
 function cleanup(text) {
+    // Replaces tabs with space
+    text = text.replace(/\t+/g, " ");
+
+/*
     // Normalize to use \n for newlines
     text = text.replace(/\r/g, "\n");
 
     // Remove unnecessary spaces, periods, and commas before a weight
-    text = text.replace(/[\., \t]*:[ \t]*([\d\.]+)[ \t]*\),?/g, ":$1)");
+    text = text.replace(/[\., ]*: *([\d\.]+) *\),?/g, ":$1)");
 
     // Remove unnecessary spaces, periods, and commas at the beginning of a line
-    text = text.replace(/(?:^|\n)[\., \t]+/g, "\n");
+    text = text.replace(/(?:^|\n)[\., ]+/g, "\n");
 
     // Remove unnecessary spaces at the end of a line
-    text = text.replace(/[ \t]+\n/g, "\n");
+    text = text.replace(/[ ]+\n/g, "\n");
 
     // Remove unnecessary periods and commas
-    text = text.replace(/([\.,])[\., \t]+/g, "$1 ");
+    text = text.replace(/([\.,])[\., ]+/g, "$1 ");
 
     // Remove unnecessary newlines
     text = text.replace(/\n{3,}/g, "\n\n");
 
-    text = text.trim();
+    text = text.trim();*/
 
     return text;
 }
@@ -35,10 +39,19 @@ function cleanup(text) {
 
 function cleanupPrompt(text) {
     // Remove unnecessary periods and commas at the beginning and end
-    text = text.replace(/(?:^[\., \t]+)|(?:[\., \t]+$)/g, "");
+    text = text.replace(/(?:^[\., ]+)|(?:[\., ]+$)/g, "");
 
     // Remove unnecessary periods and commas
-    text = text.replace(/([\.,])[\., \t]+/g, "$1 ");
+    text = text.replace(/([\.,])[\., ]+/g, "$1 ");
+
+    // Adds a space after commas
+    text = text.replace(/,(?! |$)/g, ", ");
+
+    // Adds a space after periods
+    text = text.replace(/\.(?![ \d]|$)/g, ". ");
+
+    // Remove unnecessary spaces before a period or comma
+    text = text.replace(/ +(?=[\.,])/g, "");
 
     // Remove unnecessary spaces
     text = text.replace(/ {2,}/g, " ");
@@ -97,7 +110,7 @@ class Line {
     constructor(index, value) {
         this.index = index;
 
-        const comment = /^[ \t]*(\/\/)?(.*)$/.exec(value);
+        const comment = /^ *(\/\/)?(.*)$/.exec(value);
 
         if (comment[1]) {
             this.checked = false;
@@ -106,7 +119,7 @@ class Line {
             this.checked = true;
         }
 
-        const weight = /^[ \t]*\((.*):[ \t]*([\d\.]+)[ \t]*\)[\., \t]*$/.exec(comment[2]);
+        const weight = /^ *\((.*): *([\d\.]+) *\)[\., ]*$/.exec(comment[2]);
 
         if (weight) {
             this.weight = +weight[2];
@@ -125,7 +138,7 @@ class Line {
             return `${this.checked ? "   " :  "// "} ${this.prompt},`;
 
         } else {
-            return `${this.checked ? "   " :  "// "}(${this.prompt},: ${weight})`;
+            return `${this.checked ? "   " :  "// "}(${this.prompt}, :${weight})`;
         }
     }
 
@@ -237,6 +250,8 @@ class Line {
 
 class PromptToggle {
     static parseLines(value) {
+        value = cleanup(value);
+
         const lines = [];
 
         value.split(/(?:\r\n|\n)/g).forEach((line, index) => {

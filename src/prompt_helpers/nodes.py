@@ -32,8 +32,11 @@ class PromptToggle:
 
         chunks = []
 
+        # Clean up the text so it doesn't have any tabs
+        text = re.sub(r'\t+', r' ', text)
+
         # Split the text into chunks for each BREAK
-        for chunk in re.split(r'(?:^|(?<=[\n\r]))[ \t]*BREAK[ \t]*(?:$|[\n\r]+)', text):
+        for chunk in re.split(r'(?:^|(?<=[\n\r])) *BREAK *(?:$|[\n\r]+)', text):
             if chunk != "":
                 if re.match(r'BREAK', chunk) is not None:
                     raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
@@ -41,23 +44,32 @@ class PromptToggle:
                 # Clean up the text so it doesn't have any newlines
                 chunk = re.sub(r'(?:[\n\r]+|$)', r', ', chunk)
 
-                # Clean up the text so it doesn't have repeated periods or commas
-                chunk = re.sub(r'([\.,])[\., \t]+', r'\1 ', chunk)
+                # Removes spaces before a period or comma
+                chunk = re.sub(r' +(?=[\.,])', r'', chunk)
 
-                # Clean up the text so it removes periods, commas, or spaces before the weight
-                chunk = re.sub(r'[\., \t]+(:[\d\.]+\))', r'\1', chunk)
+                # Removes repeated periods or commas
+                chunk = re.sub(r'([\.,])[\., ]+', r'\1 ', chunk)
 
-                # Clean up the text so it removes periods, commas, or spaces at the start
-                chunk = re.sub(r'^[\., \t]+', r'', chunk)
+                # Adds a space after commas
+                chunk = re.sub(r',(?![ \:]|$)', r', ', chunk)
 
-                # Clean up the text so it removes spaces at the end
-                chunk = re.sub(r'[ \t]+$', r'', chunk)
+                # Adds a space after periods
+                chunk = re.sub(r'\.(?![ \:\d]|$)', r'. ', chunk)
 
-                # Clean up the text so it doesn't have repeated spaces
+                # Removes spaces around the weight
+                chunk = re.sub(r' *: *([\d\.]+) *\) *', r':\1)', chunk)
+
+                # Removes periods, commas, or spaces at the start
+                chunk = re.sub(r'^[\., ]+', r'', chunk)
+
+                # Removes spaces at the end
+                chunk = re.sub(r' +$', r'', chunk)
+
+                # Removes repeated spaces
                 chunk = re.sub(r' {2,}', r' ', chunk)
 
                 # If the chunk is not empty
-                if re.fullmatch(r'[\., \t]*', chunk) is None:
+                if re.fullmatch(r'[\., ]*', chunk) is None:
                     # Encode using the same logic as CLIPTextEncode
                     tokens = clip.tokenize(chunk)
 
