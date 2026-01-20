@@ -473,5 +473,5 @@ app.registerExtension({
                 prompt.root,
             );
         }
-    }
+    },
 });
