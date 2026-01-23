@@ -178,10 +178,10 @@ class EZPrompt:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
-                "positive_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the positive prompt should affect the image.", "rawLink": True}),
-                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
-                "negative_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the negative prompt should affect the image.", "rawLink": True}),
+                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image."}),
+                "positive_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the positive prompt should affect the image."}),
+                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image."}),
+                "negative_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the negative prompt should affect the image."}),
             },
         }
 
@@ -259,14 +259,14 @@ class EZGenerate:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent.", "rawLink": True}),
-                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text.", "rawLink": True}),
-                "vae": ("VAE", {"rawLink": True}),
+                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent."}),
+                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text."}),
+                "vae": ("VAE", {}),
 
-                "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in.", "rawLink": True}),
-                "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated", "rawLink": True}),
+                "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in."}),
+                "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"}),
 
-                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64, "rawLink": True}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
 
                 "image": ("IMAGE_SETTINGS",),
                 "prompt": ("PROMPT_SETTINGS",),
