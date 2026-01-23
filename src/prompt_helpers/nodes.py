@@ -104,9 +104,6 @@ class PromptToggle:
 
 
 class EZBlank:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -129,9 +126,6 @@ class EZBlank:
 
 
 class EZImage:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -154,9 +148,6 @@ class EZImage:
 
 
 class EZInpaint:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -183,9 +174,6 @@ class EZInpaint:
 
 
 class EZSampler:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -193,8 +181,8 @@ class EZSampler:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "The random seed used for creating the noise."}),
                 "steps": ("INT", {"default": 30, "min": 1, "max": 10000, "tooltip": "The number of steps used in the denoising process."}),
                 "cfg": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."}),
-                "sampler_name": (comfy.samplers.KSampler.SAMPLERS, {"default": "dpmpp_sde", "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."}),
-                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"default": "karras", "tooltip": "The scheduler controls how noise is gradually removed to form the image."}),
+                "sampler_name": (sorted(comfy.samplers.KSampler.SAMPLERS), {"default": "euler", "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."}),
+                "scheduler": (sorted(comfy.samplers.KSampler.SCHEDULERS), {"default": "normal", "tooltip": "The scheduler controls how noise is gradually removed to form the image."}),
             },
         }
 
@@ -212,27 +200,27 @@ class EZSampler:
         },)
 
 
-class EZTimestamp:
-    def __init__(self):
-        pass
-
+class EZFilename:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "image": ("IMAGE",),
                 "folder": ("STRING",),
+                "filename": ("STRING",),
             },
         }
 
     RETURN_TYPES = ("STRING",)
     FUNCTION = "execute"
 
-    def execute(self, image, folder):
-        filename = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+    def execute(self, image, folder, filename):
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
 
         # TODO make this work on Windows too
         prefix = folder + "/" + filename
+
+        prefix = prefix.replace("%timestamp%", timestamp)
 
         return (prefix,)
 
@@ -253,7 +241,8 @@ class EZGenerate:
                 "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
                 "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
 
-                "folder": ("STRING", {"default": "Random", "tooltip": "The folder that the images will be saved in."}),
+                "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in.", "rawLink": True}),
+                "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated", "rawLink": True}),
 
                 "batch_size": ("INT", {"default": 1, "min": 1, "max": 64, "rawLink": True}),
 
@@ -263,12 +252,13 @@ class EZGenerate:
         }
 
     RETURN_TYPES = ("IMAGE", "STRING")
+    OUTPUT_NODE = True
     DESCRIPTION = cleandoc(__doc__)
     FUNCTION = "generate"
     CATEGORY = "prompt_helpers"
 
 
-    def generate_text(self, folder, image, sampler, **kwargs):
+    def generate_text(self, image, sampler, **kwargs):
         graph = GraphBuilder()
 
         empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=kwargs["batch_size"])
@@ -297,15 +287,17 @@ class EZGenerate:
             temporal_overlap=8,
         )
 
-        timestamp = graph.node("prompt_helpers: EZTimestamp", image=vae_decode.out(0), folder=folder)
+        filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
+
+        save_image = graph.node("SaveImage", images=vae_decode.out(0), filename_prefix=filename.out(0))
 
         return {
-            "result": (vae_decode.out(0), timestamp.out(0)),
+            "result": (vae_decode.out(0), filename.out(0)),
             "expand": graph.finalize(),
         }
 
 
-    def generate_image(self, folder, image, sampler, **kwargs):
+    def generate_image(self, image, sampler, **kwargs):
         graph = GraphBuilder()
 
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
@@ -336,15 +328,17 @@ class EZGenerate:
             temporal_overlap=8,
         )
 
-        timestamp = graph.node("prompt_helpers: EZTimestamp", image=vae_decode.out(0), folder=folder)
+        filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
+
+        save_image = graph.node("SaveImage", images=vae_decode.out(0), filename_prefix=filename.out(0))
 
         return {
-            "result": (vae_decode.out(0), timestamp.out(0)),
+            "result": (vae_decode.out(0), filename.out(0)),
             "expand": graph.finalize(),
         }
 
 
-    def generate_inpainting(self, folder, image, sampler, **kwargs):
+    def generate_inpainting(self, image, sampler, **kwargs):
         graph = GraphBuilder()
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
@@ -404,23 +398,25 @@ class EZGenerate:
             resize_source=False,
         )
 
-        timestamp = graph.node("prompt_helpers: EZTimestamp", image=image_composite_masked.out(0), folder=folder)
+        filename = graph.node("prompt_helpers: EZFilename", image=image_composite_masked.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
+
+        save_image = graph.node("SaveImage", images=image_composite_masked.out(0), filename_prefix=filename.out(0))
 
         return {
-            "result": (image_composite_masked.out(0), timestamp.out(0)),
+            "result": (image_composite_masked.out(0), filename.out(0)),
             "expand": graph.finalize(),
         }
 
 
-    def generate(self, folder, image, sampler, **kwargs):
+    def generate(self, image, sampler, **kwargs):
         if image["type"] == "BLANK":
-            return self.generate_text(folder=folder, image=image, sampler=sampler, **kwargs)
+            return self.generate_text(image=image, sampler=sampler, **kwargs)
 
         elif image["type"] == "IMAGE":
-            return self.generate_image(folder=folder, image=image, sampler=sampler, **kwargs)
+            return self.generate_image(image=image, sampler=sampler, **kwargs)
 
         elif image["type"] == "INPAINT":
-            return self.generate_inpainting(folder=folder, image=image, sampler=sampler, **kwargs)
+            return self.generate_inpainting(image=image, sampler=sampler, **kwargs)
 
 
 # A dictionary that contains all nodes you want to export with their names
@@ -432,7 +428,7 @@ NODE_CLASS_MAPPINGS = {
     "prompt_helpers: EZImage": EZImage,
     "prompt_helpers: EZInpaint": EZInpaint,
     "prompt_helpers: EZSampler": EZSampler,
-    "prompt_helpers: EZTimestamp": EZTimestamp,
+    "prompt_helpers: EZFilename": EZFilename,
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
@@ -443,5 +439,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "prompt_helpers: EZImage": "EZ img2img",
     "prompt_helpers: EZInpaint": "EZ Inpaint",
     "prompt_helpers: EZSampler": "EZ Sampler",
-    "prompt_helpers: EZTimestamp": "EZ Timestamp",
+    "prompt_helpers: EZFilename": "EZ Filename",
 }
