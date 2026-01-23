@@ -237,9 +237,11 @@ class EZGenerate:
         return {
             "required": {
                 "model": ("MODEL", {"tooltip": "The model used for denoising the input latent.", "rawLink": True}),
+                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text.", "rawLink": True}),
                 "vae": ("VAE", {"rawLink": True}),
                 "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
                 "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
+                "negative_weight": ("FLOAT", {"tooltip": "Percentage of how strongly the negative prompt should affect the image.", "default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "rawLink": True}),
 
                 "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in.", "rawLink": True}),
                 "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated", "rawLink": True}),
@@ -258,14 +260,78 @@ class EZGenerate:
     CATEGORY = "prompt_helpers"
 
 
+    def sampler(graph, model, clip, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise, neg_scale):
+        noise = graph.node("RandomNoise", noise_seed=seed)
+
+        empty = graph.node("CLIPTextEncode", text="", clip=clip)
+
+        guider = graph.node(
+            "PerpNegGuider",
+            model=model,
+            positive=positive,
+            negative=negative,
+            empty_conditioning=empty.out(0),
+            cfg=cfg,
+            neg_scale=neg_scale,
+        )
+
+        sampler = graph.node(
+            "KSamplerSelect",
+            sampler_name=sampler_name,
+        )
+
+        if scheduler == "align_your_steps":
+            sigmas = graph.node(
+                "AlignYourStepsScheduler",
+                model_type="SDXL",
+                steps=steps,
+                denoise=denoise,
+            )
+
+        elif scheduler == "gits":
+            sigmas = graph.node(
+                "GITSScheduler",
+                coeff=1.20,
+                steps=steps,
+                denoise=denoise,
+            )
+
+        elif scheduler == "sdturbo":
+            sigmas = graph.node(
+                "SDTurboScheduler",
+                model=model,
+                steps=steps,
+                denoise=denoise,
+            )
+
+        else:
+            sigmas = graph.node(
+                "BasicScheduler",
+                model=model,
+                scheduler=scheduler,
+                steps=steps,
+                denoise=denoise,
+            )
+
+        return graph.node(
+            "SamplerCustomAdvanced",
+            noise=noise.out(0),
+            guider=guider.out(0),
+            sampler=sampler.out(0),
+            sigmas=sigmas.out(0),
+            latent_image=latent_image,
+        )
+
+
     def generate_text(self, image, sampler, **kwargs):
         graph = GraphBuilder()
 
         empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=kwargs["batch_size"])
 
-        ksampler = graph.node(
-            "KSampler",
+        sampler = EZGenerate.sampler(
+            graph=graph,
             model=kwargs["model"],
+            clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=sampler["cfg"],
@@ -275,16 +341,13 @@ class EZGenerate:
             negative=kwargs["negative"],
             latent_image=empty_image.out(0),
             denoise=1.0,
+            neg_scale=kwargs["negative_weight"],
         )
 
         vae_decode = graph.node(
-            "VAEDecodeTiled",
-            samples=ksampler.out(0),
+            "VAEDecode",
+            samples=sampler.out(0),
             vae=kwargs["vae"],
-            tile_size=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
         )
 
         filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
@@ -304,9 +367,10 @@ class EZGenerate:
 
         repeat_latent_batch = graph.node("RepeatLatentBatch", samples=vae_encode.out(0), amount=kwargs["batch_size"])
 
-        ksampler = graph.node(
-            "KSampler",
+        sampler = EZGenerate.sampler(
+            graph=graph,
             model=kwargs["model"],
+            clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=sampler["cfg"],
@@ -316,16 +380,13 @@ class EZGenerate:
             negative=kwargs["negative"],
             latent_image=repeat_latent_batch.out(0),
             denoise=(1.0 - image["image_weight"]),
+            neg_scale=kwargs["negative_weight"],
         )
 
         vae_decode = graph.node(
-            "VAEDecodeTiled",
-            samples=ksampler.out(0),
+            "VAEDecode",
+            samples=sampler.out(0),
             vae=kwargs["vae"],
-            tile_size=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
         )
 
         filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
@@ -356,9 +417,10 @@ class EZGenerate:
 
         repeat_latent_batch = graph.node("RepeatLatentBatch", samples=inpaint_model_conditioning.out(2), amount=kwargs["batch_size"])
 
-        ksampler = graph.node(
-            "KSampler",
+        sampler = EZGenerate.sampler(
+            graph=graph,
             model=kwargs["model"],
+            clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=sampler["cfg"],
@@ -368,16 +430,13 @@ class EZGenerate:
             negative=inpaint_model_conditioning.out(1),
             latent_image=repeat_latent_batch.out(0),
             denoise=(1.0 - image["image_weight"]),
+            neg_scale=kwargs["negative_weight"],
         )
 
         vae_decode = graph.node(
-            "VAEDecodeTiled",
-            samples=ksampler.out(0),
+            "VAEDecode",
+            samples=sampler.out(0),
             vae=kwargs["vae"],
-            tile_size=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
         )
 
         # ComfyUI changes the image even outside of the mask, so we overwrite the image
