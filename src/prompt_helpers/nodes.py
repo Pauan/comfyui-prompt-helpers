@@ -131,7 +131,7 @@ class EZImage:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
+                "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
             },
         }
 
@@ -154,7 +154,7 @@ class EZInpaint:
             "required": {
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
-                "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
+                "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
                 "grow_mask": ("INT", {"default": 0, "min": -MAX_RESOLUTION, "max": MAX_RESOLUTION, "step": 1}),
             },
         }
@@ -173,16 +173,40 @@ class EZInpaint:
         },)
 
 
+class EZPrompt:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
+                "positive_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the positive prompt should affect the image.", "rawLink": True}),
+                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
+                "negative_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the negative prompt should affect the image.", "rawLink": True}),
+            },
+        }
+
+    RETURN_TYPES = ("PROMPT_SETTINGS",)
+    FUNCTION = "settings"
+    CATEGORY = "prompt_helpers"
+
+    def settings(self, positive, negative, positive_weight, negative_weight):
+        return ({
+            "positive": positive,
+            "negative": negative,
+            "positive_weight": positive_weight,
+            "negative_weight": negative_weight,
+        },)
+
+
 class EZSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "The random seed used for creating the noise."}),
-                "steps": ("INT", {"default": 30, "min": 1, "max": 10000, "tooltip": "The number of steps used in the denoising process."}),
-                "cfg": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."}),
                 "sampler_name": (sorted(comfy.samplers.KSampler.SAMPLERS), {"default": "euler", "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."}),
-                "scheduler": (sorted(comfy.samplers.KSampler.SCHEDULERS), {"default": "normal", "tooltip": "The scheduler controls how noise is gradually removed to form the image."}),
+                "scheduler": (sorted(["align_your_steps", "gits", "sdturbo"] + comfy.samplers.KSampler.SCHEDULERS), {"default": "normal", "tooltip": "The scheduler controls how noise is gradually removed to form the image."}),
+                "steps": ("INT", {"default": 30, "min": 1, "max": 10000, "tooltip": "The number of steps used in the denoising process."}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "The random seed used for creating the noise."}),
             },
         }
 
@@ -190,11 +214,10 @@ class EZSampler:
     FUNCTION = "settings"
     CATEGORY = "prompt_helpers/sampler"
 
-    def settings(self, seed, steps, cfg, sampler_name, scheduler):
+    def settings(self, sampler_name, scheduler, steps, seed):
         return ({
             "seed": seed,
             "steps": steps,
-            "cfg": cfg,
             "sampler_name": sampler_name,
             "scheduler": scheduler,
         },)
@@ -239,9 +262,6 @@ class EZGenerate:
                 "model": ("MODEL", {"tooltip": "The model used for denoising the input latent.", "rawLink": True}),
                 "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text.", "rawLink": True}),
                 "vae": ("VAE", {"rawLink": True}),
-                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
-                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
-                "negative_weight": ("FLOAT", {"tooltip": "Percentage of how strongly the negative prompt should affect the image.", "default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "rawLink": True}),
 
                 "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in.", "rawLink": True}),
                 "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated", "rawLink": True}),
@@ -249,6 +269,7 @@ class EZGenerate:
                 "batch_size": ("INT", {"default": 1, "min": 1, "max": 64, "rawLink": True}),
 
                 "image": ("IMAGE_SETTINGS",),
+                "prompt": ("PROMPT_SETTINGS",),
                 "sampler": ("SAMPLER_SETTINGS",),
             },
         }
@@ -323,7 +344,7 @@ class EZGenerate:
         )
 
 
-    def generate_text(self, image, sampler, **kwargs):
+    def generate_text(self, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
         empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=kwargs["batch_size"])
@@ -334,14 +355,14 @@ class EZGenerate:
             clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=sampler["cfg"],
+            cfg=prompt["positive_weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
-            positive=kwargs["positive"],
-            negative=kwargs["negative"],
+            positive=prompt["positive"],
+            negative=prompt["negative"],
             latent_image=empty_image.out(0),
             denoise=1.0,
-            neg_scale=kwargs["negative_weight"],
+            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
@@ -360,7 +381,7 @@ class EZGenerate:
         }
 
 
-    def generate_image(self, image, sampler, **kwargs):
+    def generate_image(self, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
@@ -373,14 +394,14 @@ class EZGenerate:
             clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=sampler["cfg"],
+            cfg=prompt["positive_weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
-            positive=kwargs["positive"],
-            negative=kwargs["negative"],
+            positive=prompt["positive"],
+            negative=prompt["negative"],
             latent_image=repeat_latent_batch.out(0),
             denoise=(1.0 - image["image_weight"]),
-            neg_scale=kwargs["negative_weight"],
+            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
@@ -399,7 +420,7 @@ class EZGenerate:
         }
 
 
-    def generate_inpainting(self, image, sampler, **kwargs):
+    def generate_inpainting(self, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
@@ -407,8 +428,8 @@ class EZGenerate:
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
             "InpaintModelConditioning",
-            positive=kwargs["positive"],
-            negative=kwargs["negative"],
+            positive=prompt["positive"],
+            negative=prompt["negative"],
             vae=kwargs["vae"],
             pixels=image["image"],
             mask=grow_mask.out(0),
@@ -423,14 +444,14 @@ class EZGenerate:
             clip=kwargs["clip"],
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=sampler["cfg"],
+            cfg=prompt["positive_weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
             positive=inpaint_model_conditioning.out(0),
             negative=inpaint_model_conditioning.out(1),
             latent_image=repeat_latent_batch.out(0),
             denoise=(1.0 - image["image_weight"]),
-            neg_scale=kwargs["negative_weight"],
+            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
@@ -467,15 +488,15 @@ class EZGenerate:
         }
 
 
-    def generate(self, image, sampler, **kwargs):
+    def generate(self, image, prompt, sampler, **kwargs):
         if image["type"] == "BLANK":
-            return self.generate_text(image=image, sampler=sampler, **kwargs)
+            return self.generate_text(image=image, prompt=prompt, sampler=sampler, **kwargs)
 
         elif image["type"] == "IMAGE":
-            return self.generate_image(image=image, sampler=sampler, **kwargs)
+            return self.generate_image(image=image, prompt=prompt, sampler=sampler, **kwargs)
 
         elif image["type"] == "INPAINT":
-            return self.generate_inpainting(image=image, sampler=sampler, **kwargs)
+            return self.generate_inpainting(image=image, prompt=prompt, sampler=sampler, **kwargs)
 
 
 # A dictionary that contains all nodes you want to export with their names
@@ -486,6 +507,7 @@ NODE_CLASS_MAPPINGS = {
     "prompt_helpers: EZBlank": EZBlank,
     "prompt_helpers: EZImage": EZImage,
     "prompt_helpers: EZInpaint": EZInpaint,
+    "prompt_helpers: EZPrompt": EZPrompt,
     "prompt_helpers: EZSampler": EZSampler,
     "prompt_helpers: EZFilename": EZFilename,
 }
@@ -497,6 +519,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "prompt_helpers: EZBlank": "EZ txt2img",
     "prompt_helpers: EZImage": "EZ img2img",
     "prompt_helpers: EZInpaint": "EZ Inpaint",
+    "prompt_helpers: EZPrompt": "EZ Prompt",
     "prompt_helpers: EZSampler": "EZ Sampler",
     "prompt_helpers: EZFilename": "EZ Filename",
 }
