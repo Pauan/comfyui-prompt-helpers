@@ -103,6 +103,28 @@ class PromptToggle:
             return ([[concatenated, metadata]],)
 
 
+class EZBatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_settings": ("IMAGE_SETTINGS",),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64, "tooltip": "The number of latent images in the batch."}),
+                "select_index": ("INT", {"default": -1, "min": -1, "max": 63, "tooltip": "Generate only one image in the batch. If this is -1 it will generate the entire batch."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE_SETTINGS",)
+    FUNCTION = "settings"
+    CATEGORY = "prompt_helpers/image"
+
+    def settings(self, image_settings, batch_size, select_index):
+        image_settings = image_settings.copy()
+        image_settings["batch_size"] = batch_size
+        image_settings["select_index"] = select_index
+        return (image_settings,)
+
+
 class EZBlank:
     @classmethod
     def INPUT_TYPES(s):
@@ -122,6 +144,8 @@ class EZBlank:
             "type": "BLANK",
             "width": width,
             "height": height,
+            "batch_size": 1,
+            "select_index": -1,
         },)
 
 
@@ -130,7 +154,7 @@ class EZImage:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
+                "image": ("IMAGE", {"rawLink": True}),
                 "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
             },
         }
@@ -144,6 +168,8 @@ class EZImage:
             "type": "IMAGE",
             "image": image,
             "image_weight": image_weight,
+            "batch_size": 1,
+            "select_index": -1,
         },)
 
 
@@ -152,8 +178,8 @@ class EZInpaint:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
-                "mask": ("MASK",),
+                "image": ("IMAGE", {"rawLink": True}),
+                "mask": ("MASK", {"rawLink": True}),
                 "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
                 "grow_mask": ("INT", {"default": 0, "min": -MAX_RESOLUTION, "max": MAX_RESOLUTION, "step": 1}),
             },
@@ -170,6 +196,8 @@ class EZInpaint:
             "mask": mask,
             "image_weight": image_weight,
             "grow_mask": grow_mask,
+            "batch_size": 1,
+            "select_index": -1,
         },)
 
 
@@ -178,9 +206,9 @@ class EZPrompt:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image."}),
+                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
                 "positive_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the positive prompt should affect the image."}),
-                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image."}),
+                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
                 "negative_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the negative prompt should affect the image."}),
             },
         }
@@ -228,7 +256,7 @@ class EZFilename:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
+                "image": ("IMAGE", {"rawLink": True}),
                 "folder": ("STRING",),
                 "filename": ("STRING",),
             },
@@ -259,14 +287,12 @@ class EZGenerate:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent."}),
-                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text."}),
-                "vae": ("VAE", {}),
+                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent.", "rawLink": True}),
+                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text.", "rawLink": True}),
+                "vae": ("VAE", {"rawLink": True}),
 
                 "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in."}),
                 "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"}),
-
-                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
 
                 "image": ("IMAGE_SETTINGS",),
                 "prompt": ("PROMPT_SETTINGS",),
@@ -347,7 +373,10 @@ class EZGenerate:
     def generate_text(self, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
-        empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=kwargs["batch_size"])
+        empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"])
+
+        if image["select_index"] > -1:
+            empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
         sampler = EZGenerate.sampler(
             graph=graph,
@@ -386,7 +415,14 @@ class EZGenerate:
 
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
 
-        repeat_latent_batch = graph.node("RepeatLatentBatch", samples=vae_encode.out(0), amount=kwargs["batch_size"])
+        if image["batch_size"] == 1:
+            repeat_latent_batch = vae_encode
+
+        else:
+            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=vae_encode.out(0), amount=image["batch_size"])
+
+            if image["select_index"] > -1:
+                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
         sampler = EZGenerate.sampler(
             graph=graph,
@@ -436,7 +472,14 @@ class EZGenerate:
             noise_mask=True,
         )
 
-        repeat_latent_batch = graph.node("RepeatLatentBatch", samples=inpaint_model_conditioning.out(2), amount=kwargs["batch_size"])
+        if image["batch_size"] == 1:
+            repeat_latent_batch = inpaint_model_conditioning.out(2)
+
+        else:
+            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=inpaint_model_conditioning.out(2), amount=image["batch_size"]).out(0)
+
+            if image["select_index"] > -1:
+                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch, batch_index=image["select_index"], length=1).out(0)
 
         sampler = EZGenerate.sampler(
             graph=graph,
@@ -449,7 +492,7 @@ class EZGenerate:
             scheduler=sampler["scheduler"],
             positive=inpaint_model_conditioning.out(0),
             negative=inpaint_model_conditioning.out(1),
-            latent_image=repeat_latent_batch.out(0),
+            latent_image=repeat_latent_batch,
             denoise=(1.0 - image["image_weight"]),
             neg_scale=prompt["negative_weight"],
         )
@@ -460,17 +503,21 @@ class EZGenerate:
             vae=kwargs["vae"],
         )
 
+        if image["batch_size"] == 1 or image["select_index"] > -1:
+            repeat_image_batch = image["image"]
+
+        else:
+            repeat_image_batch = graph.node(
+                "RepeatImageBatch",
+                image=image["image"],
+                amount=image["batch_size"],
+            ).out(0)
+
         # ComfyUI changes the image even outside of the mask, so we overwrite the image
         # to guarantee that *only* the masked area will be changed
-        repeat_image_batch = graph.node(
-            "RepeatImageBatch",
-            image=image["image"],
-            amount=kwargs["batch_size"],
-        )
-
         image_composite_masked = graph.node(
             "ImageCompositeMasked",
-            destination=repeat_image_batch.out(0),
+            destination=repeat_image_batch,
             source=vae_decode.out(0),
             mask=grow_mask.out(0),
             x=0,
@@ -504,6 +551,7 @@ class EZGenerate:
 NODE_CLASS_MAPPINGS = {
     "prompt_helpers: PromptToggle": PromptToggle,
     "prompt_helpers: EZGenerate": EZGenerate,
+    "prompt_helpers: EZBatch": EZBatch,
     "prompt_helpers: EZBlank": EZBlank,
     "prompt_helpers: EZImage": EZImage,
     "prompt_helpers: EZInpaint": EZInpaint,
@@ -516,6 +564,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "prompt_helpers: PromptToggle": "Prompt Toggle",
     "prompt_helpers: EZGenerate": "EZ Generate",
+    "prompt_helpers: EZBatch": "EZ Batch",
     "prompt_helpers: EZBlank": "EZ txt2img",
     "prompt_helpers: EZImage": "EZ img2img",
     "prompt_helpers: EZInpaint": "EZ Inpaint",
