@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import * as $yaml from "./deps/yaml/index.js";
 
 
 function h(tag, f) {

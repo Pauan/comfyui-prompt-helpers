@@ -38,7 +38,7 @@ The `conditioning/helpers/Prompt Toggle` node is similar to `conditioning/CLIP T
       Because the `BREAK` splits the prompt into two separate chunks, this helps the AI to understand that the `blue_eyes` and `dress` belong to the girl, and the `green_eyes` and `jacket` belong to the boy.
 
    * You can use `BREAK` to separate your prompt into different sections (quality, background, artist style, composition, etc.)
- 
+
       ```
       // Quality tags
       masterpiece,
@@ -84,7 +84,10 @@ You can also have freeform text, such as `An anime illustration of a girl and bo
 
 ```shell
 cd ComfyUI/custom_nodes
-git clone https://github.com/Pauan/comfyui-prompt-helpers.git
+git clone https://github.com/Pauan/comfyui-prompt-helpers.git prompt_helpers
+cd prompt_helpers
+yarn install
+yarn build
 ```
 
 The backend nodes are in `src/prompt_helpers/nodes.py`
