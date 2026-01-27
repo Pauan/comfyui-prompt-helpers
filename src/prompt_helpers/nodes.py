@@ -154,7 +154,7 @@ class EZImage:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE", {"rawLink": True}),
+                "image": ("IMAGE", {}),
                 "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
             },
         }
@@ -178,8 +178,8 @@ class EZInpaint:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE", {"rawLink": True}),
-                "mask": ("MASK", {"rawLink": True}),
+                "image": ("IMAGE", {}),
+                "mask": ("MASK", {}),
                 "image_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01, "tooltip": "How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."}),
                 "grow_mask": ("INT", {"default": 0, "min": -MAX_RESOLUTION, "max": MAX_RESOLUTION, "step": 1}),
             },
@@ -206,9 +206,9 @@ class EZPrompt:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image.", "rawLink": True}),
+                "positive": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to include in the image."}),
                 "positive_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the positive prompt should affect the image."}),
-                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image.", "rawLink": True}),
+                "negative": ("CONDITIONING", {"tooltip": "The conditioning describing the attributes you want to exclude from the image."}),
                 "negative_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01, "tooltip": "How strongly the negative prompt should affect the image."}),
             },
         }
@@ -256,7 +256,7 @@ class EZFilename:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE", {"rawLink": True}),
+                "image": ("IMAGE", {}),
                 "folder": ("STRING",),
                 "filename": ("STRING",),
             },
@@ -287,9 +287,9 @@ class EZGenerate:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent.", "rawLink": True}),
-                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text.", "rawLink": True}),
-                "vae": ("VAE", {"rawLink": True}),
+                "model": ("MODEL", {"tooltip": "The model used for denoising the input latent."}),
+                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text."}),
+                "vae": ("VAE", {}),
 
                 "folder": ("STRING", {"default": "", "tooltip": "The folder that the images will be saved in."}),
                 "filename": ("STRING", {"default": "%timestamp%", "tooltip": "The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"}),
