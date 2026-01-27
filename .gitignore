@@ -112,3 +112,6 @@ yarn-error.log*
 node.zip
 .vscode/
 .claude/
+
+.yarn
+/js/deps
