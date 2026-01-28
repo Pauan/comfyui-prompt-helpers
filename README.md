@@ -90,7 +90,7 @@ yarn install
 yarn build
 ```
 
-The backend nodes are in `src/prompt_helpers/nodes.py`
+The backend nodes are in `src/prompt_helpers`
 
 The frontend JS code is in `js/main.js`
 

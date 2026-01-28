@@ -1,5 +1,14 @@
 import { app } from "/scripts/app.js";
-import * as $yaml from "./deps/yaml/index.js";
+
+
+function displayError(category, message) {
+    app.extensionManager.toast.add({
+        severity: "error",
+        summary: category + " error",
+        detail: message,
+        life: 5000
+    });
+}
 
 
 function h(tag, f) {
@@ -30,29 +39,26 @@ function cleanup(text) {
     text = text.replace(/([\.,])[\., ]+/g, "$1 ");
 
     // Remove unnecessary newlines
-    text = text.replace(/\n{3,}/g, "\n\n");
+    text = text.replace(/\n{3,}/g, "\n\n");*/
 
-    text = text.trim();*/
+    text = text.trim();
 
     return text;
 }
 
 
 function cleanupPrompt(text) {
-    // Remove unnecessary periods and commas at the beginning and end
-    text = text.replace(/(?:^[\., ]+)|(?:[\., ]+$)/g, "");
+    // Remove unnecessary commas at the beginning and end
+    text = text.replace(/(?:^[, ]+)|(?:[, ]+$)/g, "");
 
-    // Remove unnecessary periods and commas
-    text = text.replace(/([\.,])[\., ]+/g, "$1 ");
+    // Remove unnecessary commas
+    text = text.replace(/,[, ]+/g, ", ");
 
     // Adds a space after commas
     text = text.replace(/,(?! |$)/g, ", ");
 
-    // Adds a space after periods
-    text = text.replace(/\.(?![ \d]|$)/g, ". ");
-
-    // Remove unnecessary spaces before a period or comma
-    text = text.replace(/ +(?=[\.,])/g, "");
+    // Remove unnecessary spaces before a comma
+    text = text.replace(/ +(?=,)/g, "");
 
     // Remove unnecessary spaces
     text = text.replace(/ {2,}/g, " ");
@@ -67,7 +73,7 @@ class Break {
     }
 
     serialize() {
-        return "BREAK";
+        return "BREAK\n";
     }
 
     render(root) {
@@ -96,7 +102,7 @@ class Blank {
     }
 
     serialize() {
-        return "";
+        return "\n";
     }
 
     render(root) {
@@ -111,16 +117,16 @@ class Line {
     constructor(index, value) {
         this.index = index;
 
-        const comment = /^ *(\/\/)?(.*)$/.exec(value);
+        const comment = /^ *(#|\/\/)?(.*)$/.exec(value);
 
         if (comment[1]) {
-            this.checked = false;
+            this.enabled = false;
 
         } else {
-            this.checked = true;
+            this.enabled = true;
         }
 
-        const weight = /^ *\((.*): *([\d\.]+) *\)[\., ]*$/.exec(comment[2]);
+        const weight = /^(.*)\* *([\d\.]+) *$/.exec(comment[2]);
 
         if (weight) {
             this.weight = +weight[2];
@@ -135,11 +141,13 @@ class Line {
     serialize() {
         const weight = this.weight.toFixed(2);
 
+        const enabled = this.enabled ? " " :  "#";
+
         if (weight === "1.00") {
-            return `${this.checked ? "   " :  "// "} ${this.prompt},`;
+            return `${enabled} ${this.prompt}\n`;
 
         } else {
-            return `${this.checked ? "   " :  "// "}(${this.prompt}, :${weight})`;
+            return `${enabled} ${this.prompt} * ${weight}\n`;
         }
     }
 
@@ -158,12 +166,12 @@ class Line {
                 dom.style.height = "16px";
                 dom.style.margin = "0px";
 
-                if (this.checked) {
+                if (this.enabled) {
                     dom.setAttribute("checked", "");
                 }
 
                 dom.addEventListener("change", () => {
-                    this.checked = dom.checked;
+                    this.enabled = dom.checked;
                     root.save();
                 });
             }));
@@ -286,6 +294,8 @@ class PromptToggle {
 
             dom.style.whiteSpace = "pre-wrap";
             dom.style.overflowWrap = "anywhere";
+
+            dom.style.fontFamily = "monospace";
         });
     }
 
@@ -294,7 +304,7 @@ class PromptToggle {
     }
 
     serialize() {
-        return this.lines.map((line) => line.serialize()).join("\n");
+        return this.lines.map((line) => line.serialize()).join("");
     }
 
     save() {
@@ -320,7 +330,7 @@ class PromptToggle {
             dom.style.flex = "1";
             dom.style.cursor = "text";
             dom.style.border = "1px solid lightsteelblue";
-            dom.style.padding = "3px";
+            dom.style.padding = "3px 4px";
             dom.style.overflow = "auto";
 
             dom.style.caretColor = "crimson";
@@ -401,7 +411,7 @@ class PromptToggle {
 
             dom.style.cursor = "pointer";
             dom.style.padding = "6px 8px";
-            dom.style.marginTop = "18px";
+            dom.style.marginTop = "12px";
 
             if (this.editing) {
                 dom.style.color = "springgreen";
@@ -456,10 +466,9 @@ app.registerExtension({
         if (node.comfyClass === "prompt_helpers: PromptToggle") {
             const textWidget = node.widgets[0];
 
-            textWidget.hidden = true;
             textWidget.options.hidden = true;
 
-            const prompt = new PromptToggle(textWidget, textWidget.options.getValue());
+            const prompt = new PromptToggle(textWidget, textWidget.value);
 
             node.onConfigure = () => {
                 prompt.replaceLines(textWidget.value);

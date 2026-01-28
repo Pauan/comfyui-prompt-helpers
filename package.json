@@ -3,12 +3,6 @@
     "name": "prompt_helpers",
     "type": "module",
     "scripts": {
-        "build": "cpr node_modules/yaml/browser js/deps/yaml --delete-first"
-    },
-    "dependencies": {
-        "yaml": "^2.8.2"
-    },
-    "devDependencies": {
-        "cpr": "^3.0.1"
+        "build": ""
     }
 }

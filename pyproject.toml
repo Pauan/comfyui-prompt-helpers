@@ -14,7 +14,7 @@ license = {text = "MIT license"}
 requires-python = ">=3.10"
 classifiers = []
 dependencies = [
-
+    "PyYAML",
 ]
 
 
@@ -42,6 +42,7 @@ Icon = ""
 Tags = []
 Repository = "https://github.com/Pauan/comfyui-prompt-helpers"
 includes = ["js"]
+requires-comfyui = ">=0.8.0"
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]

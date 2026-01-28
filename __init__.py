@@ -1,22 +1,34 @@
-from .src.prompt_helpers.nodes import (NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)
+from comfy_api.latest import ComfyExtension, io
 
-import os
-import nodes
-from comfy_config import config_parser
+from .src.prompt_helpers import (ez, prompt)
 
-custom_node_dir = os.path.dirname(os.path.realpath(__file__))
 
-project_config = config_parser.extract_node_configuration(custom_node_dir)
+class PromptHelpers(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            ez.EZBatch,
+            ez.EZBlank,
+            ez.EZImage,
+            ez.EZInpaint,
+            ez.EZPrompt,
+            ez.EZSampler,
+            ez.EZFilename,
+            ez.EZGenerate,
 
-js_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "js")
+            prompt.ParseLines,
+            prompt.ParseYAML,
+            prompt.ConcatenateJson,
+            prompt.FromJSON,
+            prompt.PromptToggle,
+        ]
 
-nodes.EXTENSION_WEB_DIRS[project_config.project.name] = js_dir
+async def comfy_entrypoint() -> PromptHelpers:
+    return PromptHelpers()
 
-__author__ = """Pauan"""
-__email__ = "pauanyu+github@pm.me"
-__version__ = project_config.project.version
+
+WEB_DIRECTORY = "./js"
 
 __all__ = [
-    "NODE_CLASS_MAPPINGS",
-    "NODE_DISPLAY_NAME_MAPPINGS",
+    "comfy_entrypoint",
+    "WEB_DIRECTORY",
 ]
