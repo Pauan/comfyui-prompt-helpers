@@ -3,6 +3,152 @@ from comfy_execution.graph_utils import GraphBuilder
 import re
 import torch
 import yaml
+from json import (dumps)
+
+
+class ProcessJson:
+    @staticmethod
+    def cleanup_prompt(prompt):
+        # Replace tabs with a space
+        prompt = re.sub(r'\t+', r' ', prompt)
+
+        # Replace newlines with a comma
+        prompt = re.sub(r'[\n\r]+', r', ', prompt)
+
+        # Removes commas and spaces at the start and end
+        prompt = re.sub(r'(?:^[, ]+)|(?:[, ]+$)', r'', prompt)
+
+        # Removes repeated commas
+        prompt = re.sub(r',[, ]+', r', ', prompt)
+
+        # Removes spaces before a comma
+        prompt = re.sub(r' +(?=,)', r'', prompt)
+
+        # Adds a space after commas
+        prompt = re.sub(r',(?! )', r', ', prompt)
+
+        # Removes repeated spaces
+        prompt = re.sub(r' {2,}', r' ', prompt)
+
+        # Replaces ( with \\(
+        prompt = re.sub(r'(?<!\\)\(', r'\\(', prompt)
+
+        # Replaces ) with \\)
+        prompt = re.sub(r'(?<!\\)\)', r'\\)', prompt)
+
+        return prompt
+
+
+    @classmethod
+    def process_children(cls, bundles, seen, outer_weight, children):
+        output = []
+
+        for item in children:
+            if "prompt" in item:
+                if item.get("enabled", True):
+                    output.append({
+                        "prompt": item["prompt"],
+                        "weight": outer_weight * item.get("weight", 1.0),
+                    })
+
+            elif "bundle" in item:
+                if item.get("enabled", True):
+                    name = item["bundle"]
+
+                    if not name in bundles:
+                        raise RuntimeError("ERROR: Bundle {} not found.".format(name))
+
+                    if name in seen:
+                        raise RuntimeError("ERROR: Infinite recursion when inserting bundle {}".format(name))
+
+                    bundle = bundles[name]
+
+                    output.extend(cls.process_children(
+                        bundles,
+                        seen.union({ name }),
+                        outer_weight * item.get("weight", 1.0),
+                        bundle["children"],
+                    ))
+
+            else:
+                raise RuntimeError("ERROR: Must be prompt or bundle.")
+
+        return output
+
+
+    """
+        Expands bundles, normalizing all weights.
+    """
+    @classmethod
+    def process_json(cls, json):
+        if not isinstance(json, list):
+            raise RuntimeError("ERROR: JSON is not an array.")
+
+        bundles = {}
+        seen = frozenset()
+
+        output = []
+
+        for item in json:
+            if "bundles" in item:
+                if not isinstance(item["bundles"], list):
+                    raise RuntimeError("ERROR: Bundles is not an array.")
+
+                for bundle in item["bundles"]:
+                    if bundle.get("enabled", True):
+                        name = bundle["name"]
+
+                        if name in bundles:
+                            raise RuntimeError("ERROR: Duplicate bundle {}".format(name))
+
+                        else:
+                            bundles[name] = bundle
+
+            elif "chunk" in item:
+                if not isinstance(item["chunk"], list):
+                    raise RuntimeError("ERROR: Chunk is not an array.")
+
+                prompts = cls.process_children(bundles, seen, 1.0, item["chunk"])
+
+                if len(prompts) > 0:
+                    output.append({
+                        "chunk": prompts
+                    })
+
+            else:
+                raise RuntimeError("ERROR: Root must be either bundles or chunk.")
+
+        return output
+
+
+    """
+        Converts chunks into text strings, ready to be CLIP encoded.
+    """
+    @classmethod
+    def serialize_chunks(cls, json):
+        chunks = []
+
+        for item in json:
+            if "chunk" in item:
+                prompts = []
+
+                for item in item["chunk"]:
+                    if "prompt" in item:
+                        prompt = cls.cleanup_prompt(item["prompt"])
+
+                        if prompt != "":
+                            prompt = prompt + ","
+                            weight = item["weight"]
+
+                            if weight == 1.0:
+                                prompts.append(prompt)
+                            else:
+                                prompts.append("({}:{}),".format(prompt, weight))
+
+                if len(prompts) > 0:
+                    chunks.append(" ".join(prompts))
+
+        return chunks
 
 
 class ParseLines(io.ComfyNode):
@@ -143,6 +289,41 @@ class ConcatenateJson(io.ComfyNode):
         return io.NodeOutput(concat)
 
 
+class DebugJSON(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: DebugJSON",
+            display_name="Debug JSON",
+            category="prompt_helpers/prompt",
+            description="Displays JSON for debug purposes.",
+            inputs=[
+                io.Custom("JSON").Input("json"),
+            ],
+            outputs=[
+                io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input."),
+
+                io.String.Output(display_name="PROCESSED", tooltip="JSON after it has been processed and expanded."),
+
+                # TODO replace this when preview supports output lists
+                io.Custom("LIST").Output(display_name="CHUNKS", tooltip="List of strings, one string per chunk"),
+                #io.String.Output(is_output_list=True, display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, json) -> io.NodeOutput:
+        processed = ProcessJson.process_json(json)
+
+        chunks = ProcessJson.serialize_chunks(processed)
+
+        return io.NodeOutput(
+            dumps(json, indent=2),
+            dumps(processed, indent=2),
+            chunks,
+        )
+
+
 class FromJSON(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -157,157 +338,36 @@ class FromJSON(io.ComfyNode):
             ],
             outputs=[
                 io.Conditioning.Output(),
-
-                # TODO replace this when preview supports output lists
-                io.Custom("LIST").Output(display_name="CHUNKS", tooltip="List of strings, one string per chunk"),
-                #io.String.Output(is_output_list=True, display_name="CHUNKS", tooltip="List of strings, one string per chunk"),
             ],
         )
-
-
-    @staticmethod
-    def cleanup_prompt(prompt):
-        # Replace tabs with a space
-        prompt = re.sub(r'\t+', r' ', prompt)
-
-        # Replace newlines with a comma
-        prompt = re.sub(r'[\n\r]+', r', ', prompt)
-
-        # Removes commas and spaces at the start and end
-        prompt = re.sub(r'(?:^[, ]+)|(?:[, ]+$)', r'', prompt)
-
-        # Removes repeated commas
-        prompt = re.sub(r',[, ]+', r', ', prompt)
-
-        # Removes spaces before a comma
-        prompt = re.sub(r' +(?=,)', r'', prompt)
-
-        # Adds a space after commas
-        prompt = re.sub(r',(?! )', r', ', prompt)
-
-        # Removes repeated spaces
-        prompt = re.sub(r' {2,}', r' ', prompt)
-
-        # Replaces ( with \\(
-        prompt = re.sub(r'(?<!\\)\(', r'\\(', prompt)
-
-        # Replaces ) with \\)
-        prompt = re.sub(r'(?<!\\)\)', r'\\)', prompt)
-
-        return prompt
-
 
     @classmethod
     def execute(cls, clip, json) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
-        if not isinstance(json, list):
-            raise RuntimeError("ERROR: JSON is not an array.")
+        json = ProcessJson.process_json(json)
 
-        bundles = {}
+        chunks_text = ProcessJson.serialize_chunks(json)
 
         chunks = []
-        chunks_text = []
 
-        for item in json:
-            if "bundles" in item:
-                if not isinstance(item["bundles"], list):
-                    raise RuntimeError("ERROR: Bundles is not an array.")
+        for chunk in chunks_text:
+            # Encode using the same logic as CLIPTextEncode
+            tokens = clip.tokenize(chunk)
 
-                for bundle in item["bundles"]:
-                    if bundle.get("enabled", True):
-                        name = bundle["name"]
+            encoded = clip.encode_from_tokens_scheduled(tokens)
+            assert len(encoded) == 1
 
-                        if name in bundles:
-                            raise RuntimeError("ERROR: Duplicate bundle {}".format(name))
+            encoded = encoded[0]
+            assert len(encoded) == 2
 
-                        else:
-                            bundles[name] = bundle
-
-
-            elif "chunk" in item:
-                if not isinstance(item["chunk"], list):
-                    raise RuntimeError("ERROR: Chunk is not an array.")
-
-                prompts = []
-
-                for item in item["chunk"]:
-                    if "prompt" in item:
-                        enabled = item.get("enabled", True)
-
-                        if enabled:
-                            prompt = cls.cleanup_prompt(item["prompt"])
-
-                            if prompt != "":
-                                prompt = prompt + ","
-
-                                weight = item.get("weight", 1.0)
-
-                                if weight == 1.0:
-                                    prompts.append(prompt)
-                                else:
-                                    prompts.append("({}:{}),".format(prompt, weight))
-
-
-                    elif "bundle" in item:
-                        enabled = item.get("enabled", True)
-
-                        if enabled:
-                            name = item["bundle"]
-
-                            if not name in bundles:
-                                raise RuntimeError("ERROR: Bundle {} not found.".format(name))
-
-                            bundle = bundles[name]
-
-                            bundle_weight = item.get("weight", 1.0)
-
-                            for item in bundle["children"]:
-                                enabled = item.get("enabled", True)
-
-                                if enabled:
-                                    prompt = cls.cleanup_prompt(item["prompt"])
-
-                                    if prompt != "":
-                                        prompt = prompt + ","
-
-                                        weight = bundle_weight * item.get("weight", 1.0)
-
-                                        if weight == 1.0:
-                                            prompts.append(prompt)
-                                        else:
-                                            prompts.append("({}:{}),".format(prompt, weight))
-
-
-                    else:
-                        raise RuntimeError("ERROR: Chunks can only contain prompt and bundle.")
-
-
-                if len(prompts) > 0:
-                    chunk = " ".join(prompts)
-
-                    # Encode using the same logic as CLIPTextEncode
-                    tokens = clip.tokenize(chunk)
-
-                    encoded = clip.encode_from_tokens_scheduled(tokens)
-                    assert len(encoded) == 1
-
-                    encoded = encoded[0]
-                    assert len(encoded) == 2
-
-                    chunks.append(encoded)
-                    chunks_text.append(chunk)
-
-
-            else:
-                raise RuntimeError("ERROR: Root must be either bundles or chunk.")
-
+            chunks.append(encoded)
 
         # Return an empty conditioning
         if len(chunks) == 0:
             tokens = clip.tokenize("")
-            return io.NodeOutput(clip.encode_from_tokens_scheduled(tokens), chunks_text)
+            return io.NodeOutput(clip.encode_from_tokens_scheduled(tokens))
 
         else:
             # Concatenate the tensors
@@ -316,7 +376,7 @@ class FromJSON(io.ComfyNode):
             # This always returns the metadata for the first chunk, this matches the behavior of ConditioningConcat
             metadata = chunks[0][1].copy()
 
-            return io.NodeOutput([[concatenated, metadata]], chunks_text)
+            return io.NodeOutput([[concatenated, metadata]])
 
 
 class PromptToggle(io.ComfyNode):

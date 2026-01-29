@@ -20,6 +20,7 @@ class PromptHelpers(ComfyExtension):
             prompt.ConcatenateJson,
             prompt.FromJSON,
             prompt.PromptToggle,
+            prompt.DebugJSON,
         ]
 
 async def comfy_entrypoint() -> PromptHelpers:

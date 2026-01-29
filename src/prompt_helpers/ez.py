@@ -231,14 +231,6 @@ class EZGenerate(io.ComfyNode):
             outputs=[
                 io.Image.Output(),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
-
-                # TODO replace this when preview supports output lists
-                io.Custom("LIST").Output(display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
-                #io.String.Output(is_output_list=True, display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
-
-                # TODO replace this when preview supports output lists
-                io.Custom("LIST").Output(display_name="NEGATIVE", tooltip="List of strings, one string per chunk"),
-                #io.String.Output(is_output_list=True, display_name="NEGATIVE", tooltip="List of strings, one string per chunk"),
             ],
             is_output_node=True,
             enable_expand=True,
@@ -248,7 +240,7 @@ class EZGenerate(io.ComfyNode):
     @staticmethod
     def convert_prompt(graph, clip, prompt):
         from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=prompt)
-        return (from_json.out(0), from_json.out(1))
+        return from_json.out(0)
 
 
     @staticmethod
@@ -324,8 +316,8 @@ class EZGenerate(io.ComfyNode):
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, positive_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        (negative, negative_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
+        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -356,8 +348,6 @@ class EZGenerate(io.ComfyNode):
         return io.NodeOutput(
             vae_decode.out(0),
             filename.out(0),
-            positive_chunks,
-            negative_chunks,
             expand=graph.finalize(),
         )
 
@@ -377,8 +367,8 @@ class EZGenerate(io.ComfyNode):
             if image["select_index"] > -1:
                 repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, positive_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        (negative, negative_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
+        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -409,8 +399,6 @@ class EZGenerate(io.ComfyNode):
         return io.NodeOutput(
             vae_decode.out(0),
             filename.out(0),
-            positive_chunks,
-            negative_chunks,
             expand=graph.finalize(),
         )
 
@@ -421,8 +409,8 @@ class EZGenerate(io.ComfyNode):
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
 
-        (positive, positive_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        (negative, negative_chunks) = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
+        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
@@ -495,8 +483,6 @@ class EZGenerate(io.ComfyNode):
         return io.NodeOutput(
             image_composite_masked.out(0),
             filename.out(0),
-            positive_chunks,
-            negative_chunks,
             expand=graph.finalize(),
         )
 
