@@ -1,11 +1,59 @@
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
 import comfy
+import folder_paths
 import datetime
+from .prompt import JSON
 
 
 # Copied from Comfy-Org/ComfyUI/nodes.py
 MAX_RESOLUTION=16384
+
+
+class EZCheckpoint(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZCheckpoint",
+            display_name="EZ Checkpoint",
+            category="prompt_helpers",
+            description="Loads a checkpoint, sets clip skip, and applies Loras from the JSON.",
+            inputs=[
+                io.Combo.Input("checkpoint", options=folder_paths.get_filename_list("checkpoints"), tooltip="The name of the checkpoint (model) to load."),
+                io.Int.Input("clip_skip", default=-2, min=-24, max=-1, step=1),
+                JSON.Input("json", optional=True, default=[]),
+            ],
+            outputs=[
+                io.Model.Output(),
+                io.Clip.Output(),
+                io.Vae.Output(),
+            ],
+            enable_expand=True,
+        )
+
+    @classmethod
+    def execute(cls, checkpoint, clip_skip, json) -> io.NodeOutput:
+        graph = GraphBuilder()
+
+        load_checkpoint = graph.node(
+            "CheckpointLoaderSimple",
+            ckpt_name=checkpoint,
+        )
+
+        set_last_layer = graph.node(
+            "CLIPSetLastLayer",
+            clip=load_checkpoint.out(1),
+            stop_at_clip_layer=clip_skip,
+        )
+
+        apply_loras = graph.node(
+            "prompt_helpers: ApplyLoras",
+            model=load_checkpoint.out(0),
+            clip=set_last_layer.out(0),
+            json=json,
+        )
+
+        return io.NodeOutput(apply_loras.out(0), apply_loras.out(1), load_checkpoint.out(2), expand=graph.finalize())
 
 
 class EZBatch(io.ComfyNode):
@@ -131,10 +179,10 @@ class EZPrompt(io.ComfyNode):
             category="prompt_helpers",
             description="Guides the image generation with a text prompt.",
             inputs=[
-                io.Custom("JSON").Input("positive", tooltip="The conditioning describing the attributes you want to include in the image."),
+                JSON.Input("positive", tooltip="The conditioning describing the attributes you want to include in the image."),
                 io.Float.Input("positive_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the positive prompt should affect the image."),
 
-                io.Custom("JSON").Input("negative", tooltip="The conditioning describing the attributes you want to exclude from the image."),
+                JSON.Input("negative", tooltip="The conditioning describing the attributes you want to exclude from the image."),
                 io.Float.Input("negative_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the negative prompt should affect the image."),
             ],
             outputs=[

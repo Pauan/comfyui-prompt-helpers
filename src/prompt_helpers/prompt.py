@@ -6,6 +6,21 @@ import yaml
 from json import (dumps)
 
 
+@io.comfytype(io_type="JSON")
+class JSON(io.ComfyTypeIO):
+    Type = list
+
+    class Input(io.WidgetInput):
+        '''JSON input.'''
+        def __init__(self, id: str, display_name: str=None, optional=False, tooltip: str=None, lazy: bool=None,
+                     default: list=None, socketless: bool=None, force_input: bool=None, extra_dict=None, raw_link: bool=None, advanced: bool=None):
+            super().__init__(id, display_name, optional, tooltip, lazy, default, socketless, None, force_input, extra_dict, raw_link, advanced)
+            self.default: list
+
+        def as_dict(self):
+            return super().as_dict()
+
+
 class ProcessJson:
     @staticmethod
     def cleanup_prompt(prompt):
@@ -51,6 +66,13 @@ class ProcessJson:
                         "weight": outer_weight * item.get("weight", 1.0),
                     })
 
+            elif "lora" in item:
+                if item.get("enabled", True):
+                    output.append({
+                        "lora": item["lora"],
+                        "weight": outer_weight * item.get("weight", 1.0),
+                    })
+
             elif "bundle" in item:
                 if item.get("enabled", True):
                     name = item["bundle"]
@@ -71,7 +93,7 @@ class ProcessJson:
                     ))
 
             else:
-                raise RuntimeError("ERROR: Must be prompt or bundle.")
+                raise RuntimeError("ERROR: Unknown type.")
 
         return output
 
@@ -163,7 +185,7 @@ class ParseLines(io.ComfyNode):
                 io.String.Input("text", dynamic_prompts=False, multiline=True),
             ],
             outputs=[
-                io.Custom("JSON").Output(),
+                JSON.Output(),
             ],
         )
 
@@ -217,10 +239,19 @@ class ParseLines(io.ComfyNode):
                                     })
 
                                 else:
-                                    prompts.append({
-                                        "prompt": prompt,
-                                        "weight": weight,
-                                    })
+                                    lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
+
+                                    if lora:
+                                        prompts.append({
+                                            "lora": lora.group(1).strip(),
+                                            "weight": weight,
+                                        })
+
+                                    else:
+                                        prompts.append({
+                                            "prompt": prompt,
+                                            "weight": weight,
+                                        })
 
                 # If the chunk is not empty
                 if len(prompts) > 0:
@@ -241,7 +272,7 @@ class ParseYAML(io.ComfyNode):
                 io.String.Input("text", dynamic_prompts=False, multiline=True),
             ],
             outputs=[
-                io.Custom("JSON").Output(),
+                JSON.Output(),
             ],
         )
 
@@ -258,10 +289,58 @@ class ParseYAML(io.ComfyNode):
         return io.NodeOutput(concat)
 
 
+class ApplyLoras(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: ApplyLoras",
+            display_name="Apply Loras",
+            category="prompt_helpers/prompt",
+            description="Applies Loras from the JSON.",
+            inputs=[
+                io.Model.Input("model"),
+                io.Clip.Input("clip"),
+                JSON.Input("json", optional=True, default=[]),
+            ],
+            outputs=[
+                io.Model.Output(),
+                io.Clip.Output(),
+            ],
+            enable_expand=True,
+        )
+
+    @classmethod
+    def execute(cls, model, clip, json) -> io.NodeOutput:
+        json = ProcessJson.process_json(json)
+
+        graph = GraphBuilder()
+
+        for item in json:
+            if "chunk" in item:
+                for item in item["chunk"]:
+                    if "lora" in item:
+                        path = item["lora"]
+                        weight = item["weight"]
+
+                        node = graph.node(
+                            "LoraLoader",
+                            model=model,
+                            clip=clip,
+                            lora_name=path,
+                            strength_model=weight,
+                            strength_clip=weight,
+                        )
+
+                        model = node.out(0)
+                        clip = node.out(1)
+
+        return io.NodeOutput(model, clip, expand=graph.finalize())
+
+
 class ConcatenateJson(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
-        template = io.Autogrow.TemplatePrefix(input=io.Custom("JSON").Input("json"), prefix="json", min=1, max=20)
+        template = io.Autogrow.TemplatePrefix(input=JSON.Input("json"), prefix="json", min=1, max=20)
 
         return io.Schema(
             node_id="prompt_helpers: ConcatenateJson",
@@ -272,7 +351,7 @@ class ConcatenateJson(io.ComfyNode):
                 io.Autogrow.Input("jsons", template=template),
             ],
             outputs=[
-                io.Custom("JSON").Output(),
+                JSON.Output(),
             ],
         )
 
@@ -298,7 +377,7 @@ class DebugJSON(io.ComfyNode):
             category="prompt_helpers/prompt",
             description="Displays JSON for debug purposes.",
             inputs=[
-                io.Custom("JSON").Input("json"),
+                JSON.Input("json"),
             ],
             outputs=[
                 io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input."),
@@ -334,7 +413,7 @@ class FromJSON(io.ComfyNode):
             description="Converts a JSON prompt into a conditioning.",
             inputs=[
                 io.Clip.Input("clip"),
-                io.Custom("JSON").Input("json"),
+                JSON.Input("json"),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -391,7 +470,7 @@ class PromptToggle(io.ComfyNode):
                 io.String.Input("text", multiline=True, dynamic_prompts=False),
             ],
             outputs=[
-                io.Custom("JSON").Output(),
+                JSON.Output(),
             ],
             enable_expand=True,
         )
