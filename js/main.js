@@ -126,10 +126,10 @@ class Line {
             this.enabled = true;
         }
 
-        const weight = /^(.*)\* *([\d\.]+) *$/.exec(comment[2]);
+        const weight = /^(.*)\* *([\-\d\.]+) *$/.exec(comment[2]);
 
         if (weight) {
-            this.weight = +weight[2];
+            this.weight = +((+weight[2]).toFixed(2));
             this.prompt = cleanupPrompt(weight[1]);
 
         } else {
@@ -189,11 +189,21 @@ class Line {
 
                     dom.textContent = weight;
 
-                    if (weight === "1.00") {
+                    if (weight === "1.00" || weight === "-1.00") {
                         dom.style.opacity = "0.2";
 
                     } else {
                         dom.style.opacity = "";
+                    }
+
+                    if (weight === "0.00") {
+                        dom.style.color = "white";
+
+                    } else if (weight[0] === "-") {
+                        dom.style.color = "hsl(0, 100%, 70%)";
+
+                    } else {
+                        dom.style.color = "hsl(120, 100%, 80%)";
                     }
                 };
 

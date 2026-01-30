@@ -63,14 +63,14 @@ class ProcessJson:
                 if item.get("enabled", True):
                     output.append({
                         "prompt": item["prompt"],
-                        "weight": outer_weight * item.get("weight", 1.0),
+                        "weight": round(outer_weight * item.get("weight", 1.0), 2),
                     })
 
             elif "lora" in item:
                 if item.get("enabled", True):
                     output.append({
                         "lora": item["lora"],
-                        "weight": outer_weight * item.get("weight", 1.0),
+                        "weight": round(outer_weight * item.get("weight", 1.0), 2),
                     })
 
             elif "bundle" in item:
@@ -141,6 +141,56 @@ class ProcessJson:
                 raise RuntimeError("ERROR: Root must be either bundles or chunk.")
 
         return output
+
+
+    """
+        Filters JSON to only have positive weights.
+    """
+    @classmethod
+    def only_positive(cls, json):
+        chunks = []
+
+        for item in json:
+            if "chunk" in item:
+                prompts = []
+
+                for item in item["chunk"]:
+                    if "prompt" in item:
+                        if item["weight"] > 0.0:
+                            prompts.append(item)
+
+                if len(prompts) > 0:
+                    chunks.append({
+                        "chunk": prompts
+                    })
+
+        return chunks
+
+
+    """
+        Filters JSON to only have negative weights.
+    """
+    @classmethod
+    def only_negative(cls, json):
+        chunks = []
+
+        for item in json:
+            if "chunk" in item:
+                prompts = []
+
+                for item in item["chunk"]:
+                    if "prompt" in item:
+                        if item["weight"] < 0.0:
+                            item = item.copy()
+                            item["weight"] = -item["weight"]
+                            prompts.append(item)
+
+                if len(prompts) > 0:
+                    chunks.append({
+                        "chunk": prompts
+                    })
+
+        return chunks
 
 
     """
@@ -217,7 +267,7 @@ class ParseLines(io.ComfyNode):
 
                     if line != "":
                         # Search for a weight for the line
-                        match = re.search(r'(.*)\* *([\d\.]+)$', line)
+                        match = re.search(r'(.*)\* *([\-\d\.]+)$', line)
 
                         if match:
                             prompt = match.group(1)
@@ -382,10 +432,12 @@ class DebugJSON(io.ComfyNode):
             outputs=[
                 io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input."),
 
-                io.String.Output(display_name="PROCESSED", tooltip="JSON after it has been processed and expanded."),
+                io.String.Output(display_name="POSITIVE", tooltip="Processed JSON that only contains positive prompts."),
+                io.String.Output(display_name="NEGATIVE", tooltip="Processed JSON that only contains negative prompts."),
 
                 # TODO replace this when preview supports output lists
-                io.Custom("LIST").Output(display_name="CHUNKS", tooltip="List of strings, one string per chunk"),
+                io.Custom("LIST").Output(display_name="POSITIVE_CHUNKS", tooltip="List of strings, one string per positive chunk"),
+                io.Custom("LIST").Output(display_name="NEGATIVE_CHUNKS", tooltip="List of strings, one string per negative chunk"),
                 #io.String.Output(is_output_list=True, display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
             ],
         )
@@ -394,12 +446,18 @@ class DebugJSON(io.ComfyNode):
     def execute(cls, json) -> io.NodeOutput:
         processed = ProcessJson.process_json(json)
 
-        chunks = ProcessJson.serialize_chunks(processed)
+        positive = ProcessJson.only_positive(processed)
+        negative = ProcessJson.only_negative(processed)
+
+        positive_chunks = ProcessJson.serialize_chunks(positive)
+        negative_chunks = ProcessJson.serialize_chunks(negative)
 
         return io.NodeOutput(
             dumps(json, indent=2),
-            dumps(processed, indent=2),
-            chunks,
+            dumps(positive, indent=2),
+            dumps(negative, indent=2),
+            positive_chunks,
+            negative_chunks,
         )
 
 
@@ -410,23 +468,19 @@ class FromJSON(io.ComfyNode):
             node_id="prompt_helpers: FromJSON",
             display_name="From JSON",
             category="prompt_helpers/prompt",
-            description="Converts a JSON prompt into a conditioning.",
+            description="Converts a JSON prompt into a positive and negative conditioning.",
             inputs=[
                 io.Clip.Input("clip"),
                 JSON.Input("json"),
             ],
             outputs=[
-                io.Conditioning.Output(),
+                io.Conditioning.Output(display_name="POSITIVE"),
+                io.Conditioning.Output(display_name="NEGATIVE"),
             ],
         )
 
-    @classmethod
-    def execute(cls, clip, json) -> io.NodeOutput:
-        if clip is None:
-            raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
-
-        json = ProcessJson.process_json(json)
-
+    @staticmethod
+    def encode(clip, json):
         chunks_text = ProcessJson.serialize_chunks(json)
 
         chunks = []
@@ -446,7 +500,7 @@ class FromJSON(io.ComfyNode):
         # Return an empty conditioning
         if len(chunks) == 0:
             tokens = clip.tokenize("")
-            return io.NodeOutput(clip.encode_from_tokens_scheduled(tokens))
+            return clip.encode_from_tokens_scheduled(tokens)
 
         else:
             # Concatenate the tensors
@@ -455,7 +509,19 @@ class FromJSON(io.ComfyNode):
             # This always returns the metadata for the first chunk, this matches the behavior of ConditioningConcat
             metadata = chunks[0][1].copy()
 
-            return io.NodeOutput([[concatenated, metadata]])
+            return [[concatenated, metadata]]
+
+    @classmethod
+    def execute(cls, clip, json) -> io.NodeOutput:
+        if clip is None:
+            raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
+
+        json = ProcessJson.process_json(json)
+
+        positive = ProcessJson.only_positive(json)
+        negative = ProcessJson.only_negative(json)
+
+        return io.NodeOutput(cls.encode(clip, positive), cls.encode(clip, negative))
 
 
 class PromptToggle(io.ComfyNode):

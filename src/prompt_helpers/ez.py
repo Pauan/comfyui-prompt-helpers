@@ -177,13 +177,11 @@ class EZPrompt(io.ComfyNode):
             node_id="prompt_helpers: EZPrompt",
             display_name="EZ Prompt",
             category="prompt_helpers",
-            description="Guides the image generation with a text prompt.",
+            description="Guides the image generation with a JSON prompt.",
             inputs=[
-                JSON.Input("positive", tooltip="The conditioning describing the attributes you want to include in the image."),
-                io.Float.Input("positive_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the positive prompt should affect the image."),
-
-                JSON.Input("negative", tooltip="The conditioning describing the attributes you want to exclude from the image."),
-                io.Float.Input("negative_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the negative prompt should affect the image."),
+                JSON.Input("json", tooltip="The conditioning describing the attributes of the image."),
+                io.Float.Input("positive_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the positive prompts should affect the image."),
+                io.Float.Input("negative_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the negative prompts should affect the image."),
             ],
             outputs=[
                 io.Custom("PROMPT_SETTINGS").Output(display_name="PROMPT"),
@@ -191,10 +189,9 @@ class EZPrompt(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, positive, negative, positive_weight, negative_weight) -> io.NodeOutput:
+    def execute(cls, json, positive_weight, negative_weight) -> io.NodeOutput:
         return io.NodeOutput({
-            "positive": positive,
-            "negative": negative,
+            "json": json,
             "positive_weight": positive_weight,
             "negative_weight": negative_weight,
         })
@@ -272,9 +269,9 @@ class EZGenerate(io.ComfyNode):
                 io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
                 io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
 
-                io.Custom("IMAGE_SETTINGS").Input("image"),
                 io.Custom("PROMPT_SETTINGS").Input("prompt"),
                 io.Custom("SAMPLER_SETTINGS").Input("sampler"),
+                io.Custom("IMAGE_SETTINGS").Input("image"),
             ],
             outputs=[
                 io.Image.Output(),
@@ -286,9 +283,9 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def convert_prompt(graph, clip, prompt):
-        from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=prompt)
-        return from_json.out(0)
+    def convert_prompt(graph, clip, json):
+        from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
+        return (from_json.out(0), from_json.out(1))
 
 
     @staticmethod
@@ -364,8 +361,7 @@ class EZGenerate(io.ComfyNode):
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
-        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -415,8 +411,7 @@ class EZGenerate(io.ComfyNode):
             if image["select_index"] > -1:
                 repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
-        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -457,8 +452,7 @@ class EZGenerate(io.ComfyNode):
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
 
-        positive = cls.convert_prompt(graph, kwargs["clip"], prompt["positive"])
-        negative = cls.convert_prompt(graph, kwargs["clip"], prompt["negative"])
+        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
