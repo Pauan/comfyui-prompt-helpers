@@ -21,7 +21,6 @@ class EZCheckpoint(io.ComfyNode):
             inputs=[
                 io.Combo.Input("checkpoint", options=folder_paths.get_filename_list("checkpoints"), tooltip="The name of the checkpoint (model) to load."),
                 io.Int.Input("clip_skip", default=-2, min=-24, max=-1, step=1),
-                JSON.Input("json", optional=True, default=[]),
             ],
             outputs=[
                 io.Model.Output(),
@@ -32,7 +31,7 @@ class EZCheckpoint(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, checkpoint, clip_skip, json) -> io.NodeOutput:
+    def execute(cls, checkpoint, clip_skip) -> io.NodeOutput:
         graph = GraphBuilder()
 
         load_checkpoint = graph.node(
@@ -46,14 +45,7 @@ class EZCheckpoint(io.ComfyNode):
             stop_at_clip_layer=clip_skip,
         )
 
-        apply_loras = graph.node(
-            "prompt_helpers: ApplyLoras",
-            model=load_checkpoint.out(0),
-            clip=set_last_layer.out(0),
-            json=json,
-        )
-
-        return io.NodeOutput(apply_loras.out(0), apply_loras.out(1), load_checkpoint.out(2), expand=graph.finalize())
+        return io.NodeOutput(load_checkpoint.out(0), set_last_layer.out(0), load_checkpoint.out(2), expand=graph.finalize())
 
 
 class EZBatch(io.ComfyNode):
@@ -289,10 +281,30 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
+    def apply_loras(graph, model, clip, json):
+        apply_loras = graph.node(
+            "prompt_helpers: ApplyLoras",
+            model=model,
+            clip=clip,
+            json=json,
+        )
+
+        return (apply_loras.out(0), apply_loras.out(1))
+
+
+    @staticmethod
     def sampler(graph, model, clip, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise, neg_scale):
         noise = graph.node("RandomNoise", noise_seed=seed)
 
         empty = graph.node("CLIPTextEncode", text="", clip=clip)
+
+        #guider = graph.node(
+        #    "CFGGuider",
+        #    model=model,
+        #    positive=positive,
+        #    negative=negative,
+        #    cfg=cfg,
+        #)
 
         guider = graph.node(
             "PerpNegGuider",
@@ -356,17 +368,19 @@ class EZGenerate(io.ComfyNode):
     def generate_text(cls, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+
         empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"])
 
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
-            model=kwargs["model"],
-            clip=kwargs["clip"],
+            model=model,
+            clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=prompt["positive_weight"],
@@ -400,6 +414,8 @@ class EZGenerate(io.ComfyNode):
     def generate_image(cls, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
 
         if image["batch_size"] == 1:
@@ -411,12 +427,12 @@ class EZGenerate(io.ComfyNode):
             if image["select_index"] > -1:
                 repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
-            model=kwargs["model"],
-            clip=kwargs["clip"],
+            model=model,
+            clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=prompt["positive_weight"],
@@ -450,9 +466,11 @@ class EZGenerate(io.ComfyNode):
     def generate_inpainting(cls, image, prompt, sampler, **kwargs):
         graph = GraphBuilder()
 
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
 
-        (positive, negative) = cls.convert_prompt(graph, kwargs["clip"], prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
@@ -476,8 +494,8 @@ class EZGenerate(io.ComfyNode):
 
         sampler = cls.sampler(
             graph=graph,
-            model=kwargs["model"],
-            clip=kwargs["clip"],
+            model=model,
+            clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
             cfg=prompt["positive_weight"],
