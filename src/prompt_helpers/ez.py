@@ -252,7 +252,7 @@ class EZGenerate(io.ComfyNode):
             node_id="prompt_helpers: EZGenerate",
             display_name="EZ Generate",
             category="prompt_helpers",
-            description="Generates and saves the image.",
+            description="Generates the image.",
             inputs=[
                 io.Model.Input("model", tooltip="The model used for denoising the input latent."),
                 io.Clip.Input("clip", tooltip="The CLIP model used for encoding the text."),
@@ -269,7 +269,6 @@ class EZGenerate(io.ComfyNode):
                 io.Image.Output(),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
             ],
-            is_output_node=True,
             enable_expand=True,
         )
 
@@ -401,8 +400,6 @@ class EZGenerate(io.ComfyNode):
 
         filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
 
-        save_image = graph.node("SaveImage", images=vae_decode.out(0), filename_prefix=filename.out(0))
-
         return io.NodeOutput(
             vae_decode.out(0),
             filename.out(0),
@@ -452,8 +449,6 @@ class EZGenerate(io.ComfyNode):
         )
 
         filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
-
-        save_image = graph.node("SaveImage", images=vae_decode.out(0), filename_prefix=filename.out(0))
 
         return io.NodeOutput(
             vae_decode.out(0),
@@ -538,8 +533,6 @@ class EZGenerate(io.ComfyNode):
 
         filename = graph.node("prompt_helpers: EZFilename", image=image_composite_masked.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
 
-        save_image = graph.node("SaveImage", images=image_composite_masked.out(0), filename_prefix=filename.out(0))
-
         return io.NodeOutput(
             image_composite_masked.out(0),
             filename.out(0),
@@ -557,3 +550,46 @@ class EZGenerate(io.ComfyNode):
 
         elif image["type"] == "INPAINT":
             return cls.generate_inpainting(image=image, prompt=prompt, sampler=sampler, **kwargs)
+
+
+class EZGenerateSave(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZGenerateSave",
+            display_name="EZ Generate Save",
+            category="prompt_helpers",
+            description="Generates and saves the image.",
+            inputs=[
+                io.Model.Input("model", tooltip="The model used for denoising the input latent."),
+                io.Clip.Input("clip", tooltip="The CLIP model used for encoding the text."),
+                io.Vae.Input("vae"),
+
+                io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
+                io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
+
+                io.Custom("PROMPT_SETTINGS").Input("prompt"),
+                io.Custom("SAMPLER_SETTINGS").Input("sampler"),
+                io.Custom("IMAGE_SETTINGS").Input("image"),
+            ],
+            outputs=[
+                io.Image.Output(),
+                io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
+            ],
+            is_output_node=True,
+            enable_expand=True,
+        )
+
+    @classmethod
+    def execute(cls, **kwargs) -> io.NodeOutput:
+        graph = GraphBuilder()
+
+        ez_generate = graph.node("prompt_helpers: EZGenerate", **kwargs)
+
+        save_image = graph.node("SaveImage", images=ez_generate.out(0), filename_prefix=ez_generate.out(1))
+
+        return io.NodeOutput(
+            ez_generate.out(0),
+            ez_generate.out(1),
+            expand=graph.finalize(),
+        )

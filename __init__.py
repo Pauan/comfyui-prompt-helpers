@@ -14,6 +14,7 @@ class PromptHelpers(ComfyExtension):
             ez.EZSampler,
             ez.EZFilename,
             ez.EZGenerate,
+            ez.EZGenerateSave,
             ez.EZCheckpoint,
 
             prompt.ParseLines,
