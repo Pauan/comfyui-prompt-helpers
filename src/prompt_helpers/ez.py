@@ -172,8 +172,7 @@ class EZPrompt(io.ComfyNode):
             description="Guides the image generation with a JSON prompt.",
             inputs=[
                 JSON.Input("json", tooltip="The conditioning describing the attributes of the image."),
-                io.Float.Input("positive_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the positive prompts should affect the image."),
-                io.Float.Input("negative_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the negative prompts should affect the image."),
+                io.Float.Input("weight", default=8.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the prompt should affect the image."),
             ],
             outputs=[
                 io.Custom("EZ_PROMPT_SETTINGS").Output(display_name="PROMPT"),
@@ -181,11 +180,10 @@ class EZPrompt(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, json, positive_weight, negative_weight) -> io.NodeOutput:
+    def execute(cls, json, weight) -> io.NodeOutput:
         return io.NodeOutput({
             "json": json,
-            "positive_weight": positive_weight,
-            "negative_weight": negative_weight,
+            "weight": weight,
         })
 
 
@@ -370,28 +368,28 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def sampler(graph, model, clip, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise, neg_scale):
+    def sampler(graph, model, clip, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         noise = graph.node("RandomNoise", noise_seed=seed)
 
         empty = graph.node("CLIPTextEncode", text="", clip=clip)
 
-        #guider = graph.node(
-        #    "CFGGuider",
-        #    model=model,
-        #    positive=positive,
-        #    negative=negative,
-        #    cfg=cfg,
-        #)
-
         guider = graph.node(
-            "PerpNegGuider",
+            "CFGGuider",
             model=model,
             positive=positive,
             negative=negative,
-            empty_conditioning=empty.out(0),
             cfg=cfg,
-            neg_scale=neg_scale,
         )
+
+        #guider = graph.node(
+        #    "PerpNegGuider",
+        #    model=model,
+        #    positive=positive,
+        #    negative=negative,
+        #    empty_conditioning=empty.out(0),
+        #    cfg=cfg,
+        #    neg_scale=neg_scale,
+        #)
 
         sampler = graph.node(
             "KSamplerSelect",
@@ -438,7 +436,7 @@ class EZGenerate(io.ComfyNode):
             sampler=sampler.out(0),
             sigmas=sigmas.out(0),
             latent_image=latent_image,
-        )
+        ).out(1)
 
 
     @classmethod
@@ -460,19 +458,18 @@ class EZGenerate(io.ComfyNode):
             clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=prompt["positive_weight"],
+            cfg=prompt["weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
             positive=positive,
             negative=negative,
             latent_image=empty_image.out(0),
             denoise=1.0,
-            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
             "VAEDecode",
-            samples=sampler.out(0),
+            samples=sampler,
             vae=kwargs["vae"],
         )
 
@@ -510,19 +507,18 @@ class EZGenerate(io.ComfyNode):
             clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=prompt["positive_weight"],
+            cfg=prompt["weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
             positive=positive,
             negative=negative,
             latent_image=repeat_latent_batch.out(0),
             denoise=(1.0 - image["image_weight"]),
-            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
             "VAEDecode",
-            samples=sampler.out(0),
+            samples=sampler,
             vae=kwargs["vae"],
         )
 
@@ -571,19 +567,18 @@ class EZGenerate(io.ComfyNode):
             clip=clip,
             seed=sampler["seed"],
             steps=sampler["steps"],
-            cfg=prompt["positive_weight"],
+            cfg=prompt["weight"],
             sampler_name=sampler["sampler_name"],
             scheduler=sampler["scheduler"],
             positive=inpaint_model_conditioning.out(0),
             negative=inpaint_model_conditioning.out(1),
             latent_image=repeat_latent_batch,
             denoise=(1.0 - image["image_weight"]),
-            neg_scale=prompt["negative_weight"],
         )
 
         vae_decode = graph.node(
             "VAEDecode",
-            samples=sampler.out(0),
+            samples=sampler,
             vae=kwargs["vae"],
         )
 
