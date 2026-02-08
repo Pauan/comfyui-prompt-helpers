@@ -152,6 +152,16 @@ class Line {
     }
 
     render(root) {
+        function weightAmount(event) {
+            if (event.shiftKey) {
+                return 0.10;
+            } else if (event.ctrlKey) {
+                return 0.01;
+            } else {
+                return 0.05;
+            }
+        }
+
         return h("div", (dom) => {
             let updateWeight;
 
@@ -161,6 +171,8 @@ class Line {
 
             dom.appendChild(h("input", (dom) => {
                 dom.setAttribute("type", "checkbox");
+
+                dom.style.cursor = "pointer";
 
                 dom.style.width = "16px";
                 dom.style.height = "16px";
@@ -209,9 +221,17 @@ class Line {
 
                 updateWeight();
 
+                dom.style.cursor = "pointer";
+
                 dom.style.height = "1lh";
                 dom.style.marginLeft = "6px";
                 dom.style.marginRight = "6px";
+
+                dom.addEventListener("click", () => {
+                    this.weight = -this.weight;
+                    updateWeight();
+                    root.save();
+                });
             }));
 
             dom.appendChild(h("button", (dom) => {
@@ -232,8 +252,8 @@ class Line {
                     dom.textContent = "-";
                 }));
 
-                dom.addEventListener("click", () => {
-                    this.weight -= 0.05;
+                dom.addEventListener("click", (event) => {
+                    this.weight -= weightAmount(event);
                     updateWeight();
                     root.save();
                 });
@@ -257,7 +277,7 @@ class Line {
                 }));
 
                 dom.addEventListener("click", () => {
-                    this.weight += 0.05;
+                    this.weight += weightAmount(event);
                     updateWeight();
                     root.save();
                 });
@@ -306,6 +326,8 @@ class PromptToggle {
             dom.style.overflowWrap = "anywhere";
 
             dom.style.fontFamily = "monospace";
+
+            dom.style.cursor = "default";
         });
     }
 
