@@ -6,7 +6,7 @@ import yaml
 from json import (dumps)
 
 
-@io.comfytype(io_type="JSON")
+@io.comfytype(io_type="EZ_JSON")
 class JSON(io.ComfyTypeIO):
     Type = list
 
@@ -235,7 +235,7 @@ class ParseLines(io.ComfyNode):
                 io.String.Input("text", dynamic_prompts=False, multiline=True),
             ],
             outputs=[
-                JSON.Output(),
+                JSON.Output(display_name="JSON"),
             ],
         )
 
@@ -322,7 +322,7 @@ class ParseYAML(io.ComfyNode):
                 io.String.Input("text", dynamic_prompts=False, multiline=True),
             ],
             outputs=[
-                JSON.Output(),
+                JSON.Output(display_name="JSON"),
             ],
         )
 
@@ -345,7 +345,6 @@ class ApplyLoras(io.ComfyNode):
         return io.Schema(
             node_id="prompt_helpers: ApplyLoras",
             display_name="Apply Loras",
-            category="prompt_helpers/prompt",
             description="Applies Loras from the JSON.",
             inputs=[
                 io.Model.Input("model"),
@@ -401,7 +400,7 @@ class ConcatenateJson(io.ComfyNode):
                 io.Autogrow.Input("jsons", template=template),
             ],
             outputs=[
-                JSON.Output(),
+                JSON.Output(display_name="JSON"),
             ],
         )
 
@@ -536,7 +535,7 @@ class PromptToggle(io.ComfyNode):
                 io.String.Input("text", multiline=True, dynamic_prompts=False),
             ],
             outputs=[
-                JSON.Output(),
+                JSON.Output(display_name="JSON"),
             ],
             enable_expand=True,
         )

@@ -57,12 +57,12 @@ class EZBatch(io.ComfyNode):
             category="prompt_helpers/image",
             description="Generates multiple images in a single run.",
             inputs=[
-                io.Custom("IMAGE_SETTINGS").Input("image_settings", display_name="IMAGE"),
+                io.Custom("EZ_IMAGE_SETTINGS").Input("image_settings", display_name="IMAGE"),
                 io.Int.Input("batch_size", default=1, min=1, max=64, tooltip="The number of latent images in the batch."),
                 io.Int.Input("select_index", default=-1, min=-1, max=63, tooltip="Generate only one image in the batch. If this is -1 it will generate the entire batch."),
             ],
             outputs=[
-                io.Custom("IMAGE_SETTINGS").Output(display_name="IMAGE"),
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
             ],
         )
 
@@ -87,7 +87,7 @@ class EZBlank(io.ComfyNode):
                 io.Int.Input("height", default=1024, min=16, max=MAX_RESOLUTION, step=8, tooltip="The height of the images in pixels."),
             ],
             outputs=[
-                io.Custom("IMAGE_SETTINGS").Output(display_name="IMAGE"),
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
             ],
         )
 
@@ -115,7 +115,7 @@ class EZImage(io.ComfyNode):
                 io.Float.Input("image_weight", default=0.0, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
             ],
             outputs=[
-                io.Custom("IMAGE_SETTINGS").Output(display_name="IMAGE"),
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
             ],
         )
 
@@ -145,7 +145,7 @@ class EZInpaint(io.ComfyNode):
                 io.Int.Input("grow_mask", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION, step=1),
             ],
             outputs=[
-                io.Custom("IMAGE_SETTINGS").Output(display_name="IMAGE"),
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
             ],
         )
 
@@ -176,7 +176,7 @@ class EZPrompt(io.ComfyNode):
                 io.Float.Input("negative_weight", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01, tooltip="How strongly the negative prompts should affect the image."),
             ],
             outputs=[
-                io.Custom("PROMPT_SETTINGS").Output(display_name="PROMPT"),
+                io.Custom("EZ_PROMPT_SETTINGS").Output(display_name="PROMPT"),
             ],
         )
 
@@ -187,6 +187,62 @@ class EZPrompt(io.ComfyNode):
             "positive_weight": positive_weight,
             "negative_weight": negative_weight,
         })
+
+
+class EZControlNet(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZControlNet",
+            display_name="EZ ControlNet",
+            category="prompt_helpers/controlnet",
+            description="Guides the image generation with a ControlNet.",
+            inputs=[
+                io.ControlNet.Input("control_net"),
+                io.Image.Input("image"),
+                io.Float.Input("strength", default=1.0, min=0.0, max=10.0, step=0.01),
+                io.Float.Input("start_percent", default=0.0, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("end_percent", default=1.0, min=0.0, max=1.0, step=0.01),
+            ],
+            outputs=[
+                io.Custom("EZ_CONTROL_NET").Output(display_name="CONTROL_NET"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, control_net, image, strength, start_percent, end_percent) -> io.NodeOutput:
+        return io.NodeOutput([{
+            "control_net": control_net,
+            "image": image,
+            "strength": strength,
+            "start_percent": start_percent,
+            "end_percent": end_percent,
+        }])
+
+
+class ConcatenateControlNet(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        template = io.Autogrow.TemplatePrefix(input=io.Custom("EZ_CONTROL_NET").Input("control_net"), prefix="control_net", min=1, max=20)
+
+        return io.Schema(
+            node_id="prompt_helpers: ConcatenateControlNet",
+            display_name="Concatenate ControlNet",
+            category="prompt_helpers/controlnet",
+            description="Combines multiple ControlNets into one ControlNet.",
+            inputs=[
+                io.Autogrow.Input("control_nets", template=template),
+            ],
+            outputs=[
+                io.Custom("EZ_CONTROL_NET").Output(display_name="CONTROL_NET"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, control_nets) -> io.NodeOutput:
+        inputs = control_nets.values()
+        flattened = [x for inner in inputs for x in inner]
+        return io.NodeOutput(flattened)
 
 
 class EZSampler(io.ComfyNode):
@@ -204,7 +260,7 @@ class EZSampler(io.ComfyNode):
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="The random seed used for creating the noise."),
             ],
             outputs=[
-                io.Custom("SAMPLER_SETTINGS").Output(display_name="SAMPLER"),
+                io.Custom("EZ_SAMPLER_SETTINGS").Output(display_name="SAMPLER"),
             ],
         )
 
@@ -261,9 +317,10 @@ class EZGenerate(io.ComfyNode):
                 io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
                 io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
 
-                io.Custom("PROMPT_SETTINGS").Input("prompt"),
-                io.Custom("SAMPLER_SETTINGS").Input("sampler"),
-                io.Custom("IMAGE_SETTINGS").Input("image"),
+                io.Custom("EZ_PROMPT_SETTINGS").Input("prompt"),
+                io.Custom("EZ_SAMPLER_SETTINGS").Input("sampler"),
+                io.Custom("EZ_IMAGE_SETTINGS").Input("image"),
+                io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
                 io.Image.Output(),
@@ -274,9 +331,30 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def convert_prompt(graph, clip, json):
+    def convert_prompt(graph, clip, vae, control_net, json):
         from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
-        return (from_json.out(0), from_json.out(1))
+
+        positive = from_json.out(0)
+        negative = from_json.out(1)
+
+        if control_net:
+            for item in control_net:
+                apply_controlnet = graph.node(
+                    "ControlNetApplyAdvanced",
+                    positive=positive,
+                    negative=negative,
+                    control_net=item["control_net"],
+                    image=item["image"],
+                    strength=item["strength"],
+                    start_percent=item["start_percent"],
+                    end_percent=item["end_percent"],
+                    vae=vae,
+                )
+
+                positive = apply_controlnet.out(0)
+                negative = apply_controlnet.out(1)
+
+        return (positive, negative)
 
 
     @staticmethod
@@ -364,7 +442,7 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def generate_text(cls, image, prompt, sampler, **kwargs):
+    def generate_text(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
         (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
@@ -374,7 +452,7 @@ class EZGenerate(io.ComfyNode):
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -408,7 +486,7 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def generate_image(cls, image, prompt, sampler, **kwargs):
+    def generate_image(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
         (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
@@ -424,7 +502,7 @@ class EZGenerate(io.ComfyNode):
             if image["select_index"] > -1:
                 repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -458,14 +536,14 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def generate_inpainting(cls, image, prompt, sampler, **kwargs):
+    def generate_inpainting(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
         (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
@@ -541,15 +619,15 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def execute(cls, image, prompt, sampler, **kwargs) -> io.NodeOutput:
+    def execute(cls, image, **kwargs) -> io.NodeOutput:
         if image["type"] == "BLANK":
-            return cls.generate_text(image=image, prompt=prompt, sampler=sampler, **kwargs)
+            return cls.generate_text(image=image, **kwargs)
 
         elif image["type"] == "IMAGE":
-            return cls.generate_image(image=image, prompt=prompt, sampler=sampler, **kwargs)
+            return cls.generate_image(image=image, **kwargs)
 
         elif image["type"] == "INPAINT":
-            return cls.generate_inpainting(image=image, prompt=prompt, sampler=sampler, **kwargs)
+            return cls.generate_inpainting(image=image, **kwargs)
 
 
 class EZGenerateSave(io.ComfyNode):
@@ -568,9 +646,10 @@ class EZGenerateSave(io.ComfyNode):
                 io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
                 io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
 
-                io.Custom("PROMPT_SETTINGS").Input("prompt"),
-                io.Custom("SAMPLER_SETTINGS").Input("sampler"),
-                io.Custom("IMAGE_SETTINGS").Input("image"),
+                io.Custom("EZ_PROMPT_SETTINGS").Input("prompt"),
+                io.Custom("EZ_SAMPLER_SETTINGS").Input("sampler"),
+                io.Custom("EZ_IMAGE_SETTINGS").Input("image"),
+                io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
                 io.Image.Output(),
