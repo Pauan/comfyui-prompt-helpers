@@ -67,13 +67,46 @@ function cleanupPrompt(text) {
 }
 
 
-class Break {
-    constructor(index) {
-        this.index = index;
+class Bundle {
+    constructor(name) {
+        this.name = name.trim();
     }
 
     serialize() {
-        return "BREAK\n";
+        return `BUNDLE: ${this.name}\n`;
+    }
+
+    render(root) {
+        return h("div", (dom) => {
+            dom.style.display = "flex";
+            dom.style.flexDirection = "row";
+            dom.style.alignItems = "center";
+
+            dom.appendChild(h("span", (dom) => {
+                dom.style.height = "1lh";
+                dom.style.marginLeft = "5px";
+                dom.style.color = "mediumorchid";
+
+                dom.textContent = "BUNDLE: ";
+            }));
+
+            dom.appendChild(h("span", (dom) => {
+                dom.style.height = "1lh";
+                dom.style.flex = "1";
+                dom.style.color = "darkorange";
+
+                dom.textContent = this.name;
+            }));
+        });
+    }
+}
+
+
+class Break {
+    constructor() {}
+
+    serialize() {
+        return "---\n";
     }
 
     render(root) {
@@ -97,9 +130,7 @@ class Break {
 
 
 class Blank {
-    constructor(index) {
-        this.index = index;
-    }
+    constructor() {}
 
     serialize() {
         return "\n";
@@ -114,9 +145,7 @@ class Blank {
 
 
 class Line {
-    constructor(index, value) {
-        this.index = index;
-
+    constructor(value) {
         const comment = /^ *(#|\/\/)?(.*)$/.exec(value);
 
         if (comment[1]) {
@@ -191,6 +220,7 @@ class Line {
             dom.appendChild(h("span", (dom) => {
                 dom.textContent = this.prompt;
 
+                dom.style.height = "1lh";
                 dom.style.flex = "1";
                 dom.style.marginLeft = "6px";
             }));
@@ -293,17 +323,20 @@ class PromptToggle {
 
         const lines = [];
 
-        value.split(/(?:\r\n|\n)/g).forEach((line, index) => {
+        value.split(/(?:\r\n|\n)/g).forEach((line) => {
             line = line.trim();
 
-            if (line === "BREAK") {
-                lines.push(new Break(index));
+            if (line === "") {
+                lines.push(new Blank());
 
-            } else if (line === "") {
-                lines.push(new Blank(index));
+            } else if (line === "BREAK" || /^\-{3,}$/.test(line)) {
+                lines.push(new Break());
+
+            } else if (line.startsWith("BUNDLE:")) {
+                lines.push(new Bundle(line.slice("BUNDLE:".length)));
 
             } else {
-                lines.push(new Line(index, line));
+                lines.push(new Line(line));
             }
         });
 

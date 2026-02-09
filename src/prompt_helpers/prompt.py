@@ -243,73 +243,109 @@ class ParseLines(io.ComfyNode):
 
     @classmethod
     def execute(cls, text) -> io.NodeOutput:
-        chunks = []
+        output = []
 
         # Clean up the text so it doesn't have any tabs
         text = re.sub(r'\t+', r' ', text)
 
-        # Split the text into chunks for each BREAK
-        for chunk in re.split(r'(?:^|(?<=[\n\r])) *BREAK *(?:$|[\n\r]+)', text):
-            if chunk != "":
-                if re.match(r'BREAK', chunk) is not None:
-                    raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
+        bundles = []
+        prompts = []
 
-                prompts = []
 
-                # TODO handle \\// and \\# properly
-                for line in chunk.splitlines():
-                    # Remove // and # comments
-                    # They can be escaped by using \
-                    line = re.sub(r'(?<!\\)(?://|#).*', r'', line)
+        def process_break(reset_bundles):
+            nonlocal bundles, prompts
 
-                    # Remove the escaping \ before the comments
-                    line = re.sub(r'\\(?=//|#)', r'', line)
+            if len(bundles) > 0:
+                bundles[-1]["children"].extend(prompts)
 
-                    line = line.strip()
+                if reset_bundles:
+                    output.append({ "bundles": bundles })
+                    bundles = []
 
-                    if line != "":
-                        # Search for a weight for the line
-                        match = re.search(r'(.*)\* *([\-\d\.]+)$', line)
+            elif len(prompts) > 0:
+                output.append({ "chunk": prompts })
 
-                        if match:
-                            prompt = match.group(1)
-                            weight = float(match.group(2))
+            prompts = []
+
+
+        def process_line(line):
+            if re.match(r'BREAK', line) is not None:
+                raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
+
+            if re.match(r'\-{3,}', line) is not None:
+                raise RuntimeError("Invalid --- found in text:\n\n" + text)
+
+            if re.match(r'BUNDLE:', line) is not None:
+                raise RuntimeError("Invalid BUNDLE: found in text:\n\n" + text)
+
+            # TODO handle \\// and \\# properly
+
+            # Remove // and # comments
+            # They can be escaped by using \
+            line = re.sub(r'(?<!\\)(?://|#).*', r'', line)
+
+            # Remove the escaping \ before the comments
+            line = re.sub(r'\\(?=//|#)', r'', line)
+
+            line = line.strip()
+
+            if line != "":
+                # Search for a weight for the line
+                match = re.search(r'(.*)\* *([\-\d\.]+)$', line)
+
+                if match:
+                    prompt = match.group(1)
+                    weight = float(match.group(2))
+
+                else:
+                    prompt = line
+                    weight = 1.0
+
+                # If there are multiple bundles in a line, split them into separate prompts
+                for prompt in re.split(r'(<[a-z]+:[^>]*>)[, ]*', prompt):
+                    if prompt != "":
+                        bundle = re.fullmatch(r'<bundle:([^>]*)>', prompt)
+
+                        if bundle:
+                            prompts.append({
+                                "bundle": bundle.group(1).strip(),
+                                "weight": weight,
+                            })
 
                         else:
-                            prompt = line
-                            weight = 1.0
+                            lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
 
-                        # If there are multiple bundles in a line, split them into separate prompts
-                        for prompt in re.split(r'(<[a-z]+:[^>]*>)[, ]*', prompt):
-                            if prompt != "":
-                                bundle = re.fullmatch(r'<bundle:([^>]*)>', prompt)
+                            if lora:
+                                prompts.append({
+                                    "lora": lora.group(1).strip(),
+                                    "weight": weight,
+                                })
 
-                                if bundle:
-                                    prompts.append({
-                                        "bundle": bundle.group(1).strip(),
-                                        "weight": weight,
-                                    })
+                            else:
+                                prompts.append({
+                                    "prompt": prompt,
+                                    "weight": weight,
+                                })
 
-                                else:
-                                    lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
 
-                                    if lora:
-                                        prompts.append({
-                                            "lora": lora.group(1).strip(),
-                                            "weight": weight,
-                                        })
+        for line in text.splitlines():
+            if line != "":
+                if re.fullmatch(r' *(?:BREAK|\-{3,}) *', line):
+                    process_break(True)
 
-                                    else:
-                                        prompts.append({
-                                            "prompt": prompt,
-                                            "weight": weight,
-                                        })
+                else:
+                    match = re.fullmatch(r' *BUNDLE:(.*)', line)
 
-                # If the chunk is not empty
-                if len(prompts) > 0:
-                    chunks.append(prompts)
+                    if match:
+                        process_break(False)
+                        bundles.append({ "name": match.group(1).strip(), "children": [] })
 
-        return io.NodeOutput([{ "chunk": chunk } for chunk in chunks])
+                    else:
+                        process_line(line)
+
+        process_break(True)
+
+        return io.NodeOutput(output)
 
 
 class ParseYAML(io.ComfyNode):
