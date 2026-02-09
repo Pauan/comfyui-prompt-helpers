@@ -145,7 +145,9 @@ class Blank {
 
 
 class Line {
-    constructor(value) {
+    constructor(value, even) {
+        this.even = even;
+
         const comment = /^ *(#|\/\/)?(.*)$/.exec(value);
 
         if (comment[1]) {
@@ -197,6 +199,8 @@ class Line {
             dom.style.display = "flex";
             dom.style.flexDirection = "row";
             dom.style.alignItems = "center";
+
+            dom.style.backdropFilter = this.even ? "invert(3%)" : "";
 
             dom.appendChild(h("input", (dom) => {
                 dom.setAttribute("type", "checkbox");
@@ -323,6 +327,8 @@ class PromptToggle {
 
         const lines = [];
 
+        let even = true;
+
         value.split(/(?:\r\n|\n)/g).forEach((line) => {
             line = line.trim();
 
@@ -331,12 +337,15 @@ class PromptToggle {
 
             } else if (line === "BREAK" || /^\-{3,}$/.test(line)) {
                 lines.push(new Break());
+                even = true;
 
             } else if (line.startsWith("BUNDLE:")) {
                 lines.push(new Bundle(line.slice("BUNDLE:".length)));
+                even = true;
 
             } else {
-                lines.push(new Line(line));
+                lines.push(new Line(line, even));
+                even = !even;
             }
         });
 
