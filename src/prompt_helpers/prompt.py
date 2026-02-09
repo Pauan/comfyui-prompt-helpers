@@ -80,10 +80,10 @@ class ProcessJson:
                     name = item["bundle"]
 
                     if not name in bundles:
-                        raise RuntimeError("ERROR: Bundle {} not found.".format(name))
+                        raise RuntimeError("Bundle {} not found.".format(name))
 
                     if name in seen:
-                        raise RuntimeError("ERROR: Infinite recursion when inserting bundle {}".format(name))
+                        raise RuntimeError("Infinite recursion when inserting bundle {}".format(name))
 
                     bundle = bundles[name]
 
@@ -95,7 +95,7 @@ class ProcessJson:
                     ))
 
             else:
-                raise RuntimeError("ERROR: Unknown type.")
+                raise RuntimeError("Unknown type.")
 
         return output
 
@@ -106,7 +106,7 @@ class ProcessJson:
     @classmethod
     def process_json(cls, json):
         if not isinstance(json, list):
-            raise RuntimeError("ERROR: JSON is not an array.")
+            raise RuntimeError("JSON is not an array.")
 
         bundles = {}
         seen = frozenset()
@@ -116,21 +116,21 @@ class ProcessJson:
         for item in json:
             if "bundles" in item:
                 if not isinstance(item["bundles"], list):
-                    raise RuntimeError("ERROR: Bundles is not an array.")
+                    raise RuntimeError("Bundles is not an array.")
 
                 for bundle in item["bundles"]:
                     if bundle.get("enabled", True):
                         name = bundle["name"]
 
                         if name in bundles:
-                            raise RuntimeError("ERROR: Duplicate bundle {}".format(name))
+                            raise RuntimeError("Duplicate bundle {}".format(name))
 
                         else:
                             bundles[name] = bundle
 
             elif "chunk" in item:
                 if not isinstance(item["chunk"], list):
-                    raise RuntimeError("ERROR: Chunk is not an array.")
+                    raise RuntimeError("Chunk is not an array.")
 
                 prompts = cls.process_children(bundles, seen, 1.0, item["chunk"])
 
@@ -140,7 +140,7 @@ class ProcessJson:
                     })
 
             else:
-                raise RuntimeError("ERROR: Root must be either bundles or chunk.")
+                raise RuntimeError("Root must be either bundles or chunk.")
 
         return output
 
@@ -334,7 +334,7 @@ class ParseYAML(io.ComfyNode):
 
         for json in yaml.safe_load_all(text):
             if not isinstance(json, list):
-                raise RuntimeError("ERROR: YAML is not an array.")
+                raise RuntimeError("YAML is not an array.")
 
             concat.extend(json)
 
@@ -425,7 +425,7 @@ class ConcatenateJson(io.ComfyNode):
 
         for key, json in jsons.items():
             if not isinstance(json, list):
-                raise RuntimeError("ERROR: {} is not an array.".format(key))
+                raise RuntimeError("{} is not an array.".format(key))
 
             concat.extend(json)
 
@@ -528,7 +528,7 @@ class FromJSON(io.ComfyNode):
     @classmethod
     def execute(cls, clip, json) -> io.NodeOutput:
         if clip is None:
-            raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
+            raise RuntimeError("clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
         json = ProcessJson.process_json(json)
 
