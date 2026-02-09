@@ -1,8 +1,10 @@
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
+import os.path
 import re
 import torch
 import yaml
+import folder_paths
 from json import (dumps)
 
 
@@ -358,6 +360,19 @@ class ApplyLoras(io.ComfyNode):
             enable_expand=True,
         )
 
+    @staticmethod
+    def lora_path(path):
+        (_, ext) = os.path.splitext(path)
+
+        if ext == "":
+            path = path + ".safetensors"
+
+        if folder_paths.get_full_path("loras", path):
+            return path
+
+        else:
+            raise RuntimeError("Could not find lora: {}".format(path))
+
     @classmethod
     def execute(cls, model, clip, json) -> io.NodeOutput:
         json = ProcessJson.process_json(json)
@@ -368,7 +383,7 @@ class ApplyLoras(io.ComfyNode):
             if "chunk" in item:
                 for item in item["chunk"]:
                     if "lora" in item:
-                        path = item["lora"]
+                        path = cls.lora_path(item["lora"])
                         weight = item["weight"]
 
                         node = graph.node(
