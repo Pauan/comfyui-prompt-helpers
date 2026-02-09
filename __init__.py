@@ -17,6 +17,7 @@ class PromptHelpers(ComfyExtension):
             ez.EZGenerateSave,
             ez.EZCheckpoint,
             ez.ConcatenateControlNet,
+            ez.EmptyControlNet,
             ez.EZControlNet,
 
             prompt.ParseLines,

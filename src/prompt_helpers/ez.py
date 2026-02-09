@@ -218,6 +218,25 @@ class EZControlNet(io.ComfyNode):
         }])
 
 
+class EmptyControlNet(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EmptyControlNet",
+            display_name="Empty ControlNet",
+            category="prompt_helpers/controlnet",
+            description="ControlNet which does nothing.",
+            inputs=[],
+            outputs=[
+                io.Custom("EZ_CONTROL_NET").Output(display_name="CONTROL_NET"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls) -> io.NodeOutput:
+        return io.NodeOutput([])
+
+
 class ConcatenateControlNet(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -321,7 +340,8 @@ class EZGenerate(io.ComfyNode):
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(),
+                io.Image.Output(tooltip="The output image."),
+                io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
             ],
             enable_expand=True,
@@ -477,6 +497,7 @@ class EZGenerate(io.ComfyNode):
 
         return io.NodeOutput(
             vae_decode.out(0),
+            vae_decode.out(0),
             filename.out(0),
             expand=graph.finalize(),
         )
@@ -525,6 +546,7 @@ class EZGenerate(io.ComfyNode):
         filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
 
         return io.NodeOutput(
+            vae_decode.out(0),
             vae_decode.out(0),
             filename.out(0),
             expand=graph.finalize(),
@@ -604,10 +626,20 @@ class EZGenerate(io.ComfyNode):
             resize_source=False,
         )
 
+        # Everything that isn't masked will be transparent.
+        invert_mask = graph.node("InvertMask", mask=grow_mask.out(0))
+
+        join_image = graph.node(
+            "JoinImageWithAlpha",
+            image=vae_decode.out(0),
+            alpha=invert_mask.out(0),
+        )
+
         filename = graph.node("prompt_helpers: EZFilename", image=image_composite_masked.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
 
         return io.NodeOutput(
             image_composite_masked.out(0),
+            join_image.out(0),
             filename.out(0),
             expand=graph.finalize(),
         )
@@ -647,7 +679,8 @@ class EZGenerateSave(io.ComfyNode):
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(),
+                io.Image.Output(tooltip="The output image."),
+                io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
             ],
             is_output_node=True,
@@ -665,5 +698,6 @@ class EZGenerateSave(io.ComfyNode):
         return io.NodeOutput(
             ez_generate.out(0),
             ez_generate.out(1),
+            ez_generate.out(2),
             expand=graph.finalize(),
         )
