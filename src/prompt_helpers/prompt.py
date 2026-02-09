@@ -379,12 +379,22 @@ class ApplyLoras(io.ComfyNode):
 
         graph = GraphBuilder()
 
+        seen = set()
+
         for item in json:
             if "chunk" in item:
                 for item in item["chunk"]:
                     if "lora" in item:
                         path = cls.lora_path(item["lora"])
                         weight = item["weight"]
+
+                        if path in seen:
+                            raise RuntimeError("Duplicate lora: {}".format(path))
+                        else:
+                            seen.add(path)
+
+                        if weight < 0.0:
+                            raise RuntimeError("Loras must have a positive weight.")
 
                         node = graph.node(
                             "LoraLoader",
