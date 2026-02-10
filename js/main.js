@@ -217,6 +217,7 @@ class Line {
 
                 dom.addEventListener("change", () => {
                     this.enabled = dom.checked;
+                    updateWeight();
                     root.save();
                 });
             }));
@@ -231,25 +232,33 @@ class Line {
 
             dom.appendChild(h("span", (dom) => {
                 updateWeight = () => {
-                    const weight = this.weight.toFixed(2);
+                    this.weight = +(this.weight.toFixed(2));
 
-                    dom.textContent = weight;
+                    dom.textContent = this.weight.toFixed(2);
 
-                    if (weight === "1.00" || weight === "-1.00") {
+                    const disabled = this.weight === 0 || !this.enabled;
+
+                    if (disabled) {
                         dom.style.opacity = "0.2";
 
                     } else {
                         dom.style.opacity = "";
                     }
 
-                    if (weight === "0.00") {
+                    if (disabled) {
                         dom.style.color = "white";
 
-                    } else if (weight[0] === "-") {
+                    } else if (this.weight < 0) {
                         dom.style.color = "hsl(0, 100%, 70%)";
 
-                    } else {
+                    } else if (this.weight > 1) {
                         dom.style.color = "hsl(120, 100%, 80%)";
+
+                    } else if (this.weight === 1) {
+                        dom.style.color = "white";
+
+                    } else {
+                        dom.style.color = "gold";
                     }
                 };
 
