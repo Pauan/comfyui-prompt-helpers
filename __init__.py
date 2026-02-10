@@ -20,6 +20,7 @@ class PromptHelpers(ComfyExtension):
             ez.EmptyControlNet,
             ez.EZControlNet,
 
+            prompt.ProcessJson,
             prompt.ParseLines,
             prompt.ParseYAML,
             prompt.ConcatenateJson,

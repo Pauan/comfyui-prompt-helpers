@@ -463,14 +463,16 @@ class EZGenerate(io.ComfyNode):
     def generate_text(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
+
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
 
         empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"])
 
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
 
         sampler = cls.sampler(
             graph=graph,
@@ -507,7 +509,9 @@ class EZGenerate(io.ComfyNode):
     def generate_image(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
+
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
 
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
 
@@ -520,7 +524,7 @@ class EZGenerate(io.ComfyNode):
             if image["select_index"] > -1:
                 repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
 
         sampler = cls.sampler(
             graph=graph,
@@ -557,11 +561,13 @@ class EZGenerate(io.ComfyNode):
     def generate_inpainting(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], prompt["json"])
+        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
+
+        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, prompt["json"])
+        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(

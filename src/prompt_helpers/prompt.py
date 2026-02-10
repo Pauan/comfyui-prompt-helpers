@@ -23,7 +23,22 @@ class JSON(io.ComfyTypeIO):
             return super().as_dict()
 
 
-class ProcessJson:
+class ProcessJson(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: ProcessJson",
+            display_name="Process JSON",
+            description="Processes and normalizes JSON.",
+            inputs=[
+                JSON.Input("json"),
+            ],
+            outputs=[
+                JSON.Output(display_name="JSON"),
+            ],
+        )
+
+
     @staticmethod
     def cleanup_prompt(prompt):
         # Replace tabs with a space
@@ -57,16 +72,24 @@ class ProcessJson:
 
 
     @classmethod
-    def process_children(cls, bundles, seen, outer_weight, children):
+    def process_children(cls, bundles, seen_bundles, seen_prompts, outer_weight, children):
         output = []
 
         for item in children:
             if "prompt" in item:
                 if item.get("enabled", True):
-                    output.append({
-                        "prompt": item["prompt"],
-                        "weight": round(outer_weight * item.get("weight", 1.0), 2),
-                    })
+                    prompt = cls.cleanup_prompt(item["prompt"])
+
+                    if prompt != "":
+                        if prompt in seen_prompts:
+                            raise RuntimeError("Duplicate prompt: {}".format(prompt))
+                        else:
+                            seen_prompts.add(prompt)
+
+                        output.append({
+                            "prompt": prompt,
+                            "weight": round(outer_weight * item.get("weight", 1.0), 2),
+                        })
 
             elif "lora" in item:
                 if item.get("enabled", True):
@@ -82,14 +105,15 @@ class ProcessJson:
                     if not name in bundles:
                         raise RuntimeError("Bundle {} not found.".format(name))
 
-                    if name in seen:
+                    if name in seen_bundles:
                         raise RuntimeError("Infinite recursion when inserting bundle {}".format(name))
 
                     bundle = bundles[name]
 
                     output.extend(cls.process_children(
                         bundles,
-                        seen.union({ name }),
+                        seen_bundles.union({ name }),
+                        seen_prompts,
                         outer_weight * item.get("weight", 1.0),
                         bundle["children"],
                     ))
@@ -109,7 +133,8 @@ class ProcessJson:
             raise RuntimeError("JSON is not an array.")
 
         bundles = {}
-        seen = frozenset()
+        seen_bundles = frozenset()
+        seen_prompts = set()
 
         output = []
 
@@ -123,7 +148,7 @@ class ProcessJson:
                         name = bundle["name"]
 
                         if name in bundles:
-                            raise RuntimeError("Duplicate bundle {}".format(name))
+                            raise RuntimeError("Duplicate bundle: {}".format(name))
 
                         else:
                             bundles[name] = bundle
@@ -132,7 +157,7 @@ class ProcessJson:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                prompts = cls.process_children(bundles, seen, 1.0, item["chunk"])
+                prompts = cls.process_children(bundles, seen_bundles, seen_prompts, 1.0, item["chunk"])
 
                 if len(prompts) > 0:
                     output.append({
@@ -208,21 +233,23 @@ class ProcessJson:
 
                 for item in item["chunk"]:
                     if "prompt" in item:
-                        prompt = cls.cleanup_prompt(item["prompt"])
+                        prompt = item["prompt"] + ","
+                        weight = item["weight"]
 
-                        if prompt != "":
-                            prompt = prompt + ","
-                            weight = item["weight"]
-
-                            if weight == 1.0:
-                                prompts.append(prompt)
-                            else:
-                                prompts.append("({}:{}),".format(prompt, weight))
+                        if weight == 1.0:
+                            prompts.append(prompt)
+                        else:
+                            prompts.append("({}:{}),".format(prompt, weight))
 
                 if len(prompts) > 0:
                     chunks.append(" ".join(prompts))
 
         return chunks
+
+
+    @classmethod
+    def execute(cls, json) -> io.NodeOutput:
+        return io.NodeOutput(cls.process_json(json))
 
 
 class ParseLines(io.ComfyNode):
@@ -411,8 +438,6 @@ class ApplyLoras(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, clip, json) -> io.NodeOutput:
-        json = ProcessJson.process_json(json)
-
         graph = GraphBuilder()
 
         seen = set()
@@ -527,7 +552,6 @@ class FromJSON(io.ComfyNode):
         return io.Schema(
             node_id="prompt_helpers: FromJSON",
             display_name="From JSON",
-            category="prompt_helpers/prompt",
             description="Converts a JSON prompt into a positive and negative conditioning.",
             inputs=[
                 io.Clip.Input("clip"),
@@ -575,8 +599,6 @@ class FromJSON(io.ComfyNode):
     def execute(cls, clip, json) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
-
-        json = ProcessJson.process_json(json)
 
         positive = ProcessJson.only_positive(json)
         negative = ProcessJson.only_negative(json)
