@@ -1,4 +1,12 @@
+// @TODO It should pan when using the middle mouse button on the node
 import { app } from "/scripts/app.js";
+
+{
+    const link = document.createElement("link");
+    link.href = "extensions/prompt_helpers/main.css";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+}
 
 
 function displayError(category, message) {
@@ -78,23 +86,15 @@ class Bundle {
 
     render(root) {
         return h("div", (dom) => {
-            dom.style.display = "flex";
-            dom.style.flexDirection = "row";
-            dom.style.alignItems = "center";
+            dom.className = "bundle";
 
             dom.appendChild(h("span", (dom) => {
-                dom.style.height = "1lh";
-                dom.style.marginLeft = "5px";
-                dom.style.color = "mediumorchid";
-
+                dom.className = "bundle-header";
                 dom.textContent = "BUNDLE: ";
             }));
 
             dom.appendChild(h("span", (dom) => {
-                dom.style.height = "1lh";
-                dom.style.flex = "1";
-                dom.style.color = "darkorange";
-
+                dom.className = "bundle-text";
                 dom.textContent = this.name;
             }));
         });
@@ -111,18 +111,10 @@ class Break {
 
     render(root) {
         return h("div", (dom) => {
-            dom.style.height = "1lh";
-
-            dom.style.display = "flex";
-            dom.style.flexDirection = "row";
-            dom.style.alignItems = "center";
+            dom.className = "break";
 
             dom.appendChild(h("div", (dom) => {
-                dom.style.width = "100%";
-                dom.style.height = "2px";
-                dom.style.border = "none";
-                dom.style.margin = "0px";
-                dom.style.backgroundColor = "hsl(207.3, 25%, 35%)";
+                dom.className = "break-line";
             }));
         });
     }
@@ -138,7 +130,7 @@ class Blank {
 
     render(root) {
         return h("br", (dom) => {
-            dom.style.lineHeight = "1lh";
+            dom.className = "blank";
         });
     }
 }
@@ -196,20 +188,13 @@ class Line {
         return h("div", (dom) => {
             let updateWeight;
 
-            dom.style.display = "flex";
-            dom.style.flexDirection = "row";
-            dom.style.alignItems = "center";
-
-            dom.style.backdropFilter = this.even ? "invert(3%)" : "";
+            dom.className = "line";
+            dom.classList.toggle("even", this.even);
 
             dom.appendChild(h("input", (dom) => {
+                dom.className = "line-checkbox";
+
                 dom.setAttribute("type", "checkbox");
-
-                dom.style.cursor = "pointer";
-
-                dom.style.width = "16px";
-                dom.style.height = "16px";
-                dom.style.margin = "0px";
 
                 if (this.enabled) {
                     dom.setAttribute("checked", "");
@@ -223,14 +208,13 @@ class Line {
             }));
 
             dom.appendChild(h("span", (dom) => {
+                dom.className = "line-prompt";
                 dom.textContent = this.prompt;
-
-                dom.style.height = "1lh";
-                dom.style.flex = "1";
-                dom.style.marginLeft = "6px";
             }));
 
             dom.appendChild(h("span", (dom) => {
+                dom.className = "line-weight";
+
                 updateWeight = () => {
                     this.weight = +(this.weight.toFixed(2));
 
@@ -238,37 +222,14 @@ class Line {
 
                     const disabled = this.weight === 0 || !this.enabled;
 
-                    if (disabled) {
-                        dom.style.opacity = "0.2";
-
-                    } else {
-                        dom.style.opacity = "";
-                    }
-
-                    if (disabled) {
-                        dom.style.color = "white";
-
-                    } else if (this.weight < 0) {
-                        dom.style.color = "hsl(0, 100%, 70%)";
-
-                    } else if (this.weight > 1) {
-                        dom.style.color = "hsl(120, 100%, 80%)";
-
-                    } else if (this.weight === 1) {
-                        dom.style.color = "white";
-
-                    } else {
-                        dom.style.color = "gold";
-                    }
+                    dom.classList.toggle("disabled", disabled);
+                    dom.classList.toggle("negative", !disabled && this.weight < 0);
+                    dom.classList.toggle("less", !disabled && this.weight > 0 && this.weight < 1);
+                    dom.classList.toggle("normal", !disabled && this.weight === 1);
+                    dom.classList.toggle("more", !disabled && this.weight > 1);
                 };
 
                 updateWeight();
-
-                dom.style.cursor = "pointer";
-
-                dom.style.height = "1lh";
-                dom.style.marginLeft = "6px";
-                dom.style.marginRight = "6px";
 
                 dom.addEventListener("click", () => {
                     this.weight = -this.weight;
@@ -278,18 +239,9 @@ class Line {
             }));
 
             dom.appendChild(h("button", (dom) => {
+                dom.className = "line-button minus";
+
                 dom.tabIndex = "-1";
-
-                dom.style.width = "18px";
-                dom.style.height = "18px";
-                dom.style.margin = "0px";
-                dom.style.marginRight = "1px";
-
-                dom.style.cursor = "pointer";
-
-                dom.style.display = "flex";
-                dom.style.alignItems = "center";
-                dom.style.justifyContent = "center";
 
                 dom.appendChild(h("div", (dom) => {
                     dom.textContent = "-";
@@ -303,17 +255,9 @@ class Line {
             }));
 
             dom.appendChild(h("button", (dom) => {
+                dom.className = "line-button";
+
                 dom.tabIndex = "-1";
-
-                dom.style.width = "18px";
-                dom.style.height = "18px";
-                dom.style.margin = "0px";
-
-                dom.style.cursor = "pointer";
-
-                dom.style.display = "flex";
-                dom.style.alignItems = "center";
-                dom.style.justifyContent = "center";
 
                 dom.appendChild(h("div", (dom) => {
                     dom.textContent = "+";
@@ -369,17 +313,39 @@ class PromptToggle {
         this.editing = false;
         this.editText = null;
 
+        this.holdingAlt = false;
+
         this.root = h("div", (dom) => {
-            dom.style.display = "flex";
-            dom.style.flexDirection = "column";
+            dom.className = "prompt_helpers-root";
 
-            dom.style.whiteSpace = "pre-wrap";
-            dom.style.overflowWrap = "anywhere";
+            // @TODO MacOS support
+            function altKey(event) {
+                return !event.shiftKey && !event.ctrlKey && event.altKey && !event.metaKey;
+            }
 
-            dom.style.fontFamily = "monospace";
+            const toggleCursor = (event) => {
+                this.holdingAlt = altKey(event);
+                this.updateCursor();
+            };
 
-            dom.style.cursor = "default";
+            addEventListener("keydown", toggleCursor, true);
+            addEventListener("keyup", toggleCursor, true);
+
+            dom.addEventListener("click", (event) => {
+                if (event.button === 0 && altKey(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.stopImmediatePropagation();
+
+                    this.toggleMode();
+                }
+            }, true);
         });
+    }
+
+    updateCursor() {
+        this.root.classList.toggle("cursor-save", this.holdingAlt && this.editing);
+        this.root.classList.toggle("cursor-edit", this.holdingAlt && !this.editing);
     }
 
     replaceLines(value) {
@@ -392,10 +358,32 @@ class PromptToggle {
 
     save() {
         this.textWidget.value = this.serialize();
+        this.textWidget.callback(this.textWidget.value);
+    }
+
+    toggleMode() {
+        if (this.editing) {
+            const text = this.editText;
+
+            this.editing = false;
+            this.editText = null;
+
+            this.replaceLines(text);
+            this.save();
+
+        } else {
+            this.editing = true;
+            this.editText = this.serialize();
+        }
+
+        this.updateCursor();
+        this.render();
     }
 
     renderEditBox() {
         return h("div", (dom) => {
+            dom.className = "edit-box";
+
             dom.textContent = this.editText;
 
             // Textareas can't be dynamically resized, so we use contenteditable as a workaround
@@ -407,25 +395,6 @@ class PromptToggle {
             queueMicrotask(() => {
                 dom.focus();
             });
-
-            dom.className = "comfy-multiline-input";
-
-            dom.style.flex = "1";
-            dom.style.cursor = "text";
-            dom.style.border = "1px solid lightsteelblue";
-            dom.style.padding = "3px 4px";
-            dom.style.overflow = "auto";
-
-            dom.style.caretColor = "crimson";
-
-            dom.style.fontFamily = "inherit";
-            dom.style.fontSize = "inherit";
-            dom.style.lineHeight = "inherit";
-            dom.style.minHeight = "5lh";
-            dom.style.boxSizing = "content-box";
-            dom.style.backgroundColor = "hsl(240, 100%, 13%)";
-            dom.style.color = "white";
-            dom.style.borderRadius = "5px";
 
             dom.addEventListener("input", (event) => {
                 this.editText = dom.textContent;
@@ -486,36 +455,17 @@ class PromptToggle {
 
     renderEditButton() {
         return h("button", (dom) => {
+            dom.className = "toggle-mode";
+            dom.classList.toggle("editing", this.editing);
+
             if (this.editing) {
                 dom.textContent = "💾 Save prompt";
             } else {
                 dom.textContent = "📝 Edit prompt";
             }
 
-            dom.style.cursor = "pointer";
-            dom.style.padding = "6px 8px";
-            dom.style.marginTop = "12px";
-
-            if (this.editing) {
-                dom.style.color = "springgreen";
-            }
-
             dom.addEventListener("click", () => {
-                if (this.editing) {
-                    const text = this.editText;
-
-                    this.editing = false;
-                    this.editText = null;
-
-                    this.replaceLines(text);
-                    this.save();
-
-                } else {
-                    this.editing = true;
-                    this.editText = this.serialize();
-                }
-
-                this.render();
+                this.toggleMode();
             });
         });
     }
@@ -528,9 +478,7 @@ class PromptToggle {
 
         } else {
             this.root.appendChild(h("div", (dom) => {
-                dom.style.flex = "1";
-                dom.style.padding = "4px 0px";
-                dom.style.overflow = "auto";
+                dom.className = "lines";
 
                 this.lines.forEach((line) => {
                     dom.appendChild(line.render(this));
