@@ -358,7 +358,10 @@ class PromptToggle {
 
     save() {
         this.textWidget.value = this.serialize();
-        this.textWidget.callback(this.textWidget.value);
+
+        if (this.textWidget.callback) {
+            this.textWidget.callback(this.textWidget.value);
+        }
     }
 
     toggleMode() {
