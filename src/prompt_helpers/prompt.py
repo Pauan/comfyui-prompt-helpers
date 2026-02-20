@@ -8,6 +8,11 @@ import folder_paths
 from json import (dumps)
 
 
+# @TODO Hack that causes ComfyUI to always execute the node
+class AlwaysExecute:
+    pass
+
+
 @io.comfytype(io_type="EZ_JSON")
 class JSON(io.ComfyTypeIO):
     Type = list
@@ -268,8 +273,30 @@ class ParseLines(io.ComfyNode):
             ],
         )
 
+
     @classmethod
-    def execute(cls, text) -> io.NodeOutput:
+    def fingerprint_inputs(cls, text):
+        if "FILE:" in text:
+            return AlwaysExecute()
+        else:
+            return text
+
+
+    @staticmethod
+    def read_file(path):
+        # Copied from https://github.com/Comfy-Org/ComfyUI/blob/2687652530128435d5cdcfe2600751c8c4b75b88/folder_paths.py#L349-L366
+        full_path = os.path.join(os.path.join(folder_paths.models_dir, "prompts"), os.path.relpath(os.path.join("/", path), "/"))
+
+        if os.path.isfile(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read()
+
+        else:
+            raise RuntimeError("Could not find file: {}".format(path))
+
+
+    @classmethod
+    def parse_lines(cls, text):
         output = []
 
         # Clean up the text so it doesn't have any tabs
@@ -304,6 +331,9 @@ class ParseLines(io.ComfyNode):
 
             if re.match(r'BUNDLE:', line) is not None:
                 raise RuntimeError("Invalid BUNDLE: found in text:\n\n" + text)
+
+            if re.match(r'FILE:', line) is not None:
+                raise RuntimeError("Invalid FILE: found in text:\n\n" + text)
 
             # TODO handle \\// and \\# properly
 
@@ -368,11 +398,22 @@ class ParseLines(io.ComfyNode):
                         bundles.append({ "name": match.group(1).strip(), "children": [] })
 
                     else:
-                        process_line(line)
+                        match = re.fullmatch(r' *FILE:(.*)', line)
+
+                        if match:
+                            process_break(True)
+                            output.extend(cls.parse_lines(cls.read_file(match.group(1).strip())))
+
+                        else:
+                            process_line(line)
 
         process_break(True)
+        return output
 
-        return io.NodeOutput(output)
+
+    @classmethod
+    def execute(cls, text) -> io.NodeOutput:
+        return io.NodeOutput(cls.parse_lines(text))
 
 
 class ParseYAML(io.ComfyNode):
