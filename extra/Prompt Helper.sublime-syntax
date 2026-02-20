@@ -1,0 +1,64 @@
+%YAML 1.2
+---
+# See http://www.sublimetext.com/docs/3/syntax.html
+name: Prompt Helper
+version: 2
+file_extensions:
+  - prompt
+scope: source.prompt
+contexts:
+  main:
+    # Allow for escaping anything (e.g. comments or weights)
+    - match: '\\.'
+
+    # Comments begin with a '#' and finish at the end of the line
+    - match: '#'
+      scope: punctuation.definition.comment.prompt
+      push: line_comment
+
+    # Comments begin with a '//' and finish at the end of the line
+    - match: '//'
+      scope: punctuation.definition.comment.prompt
+      push: line_comment
+
+    - match: '<[a-z\-]+:([^>]*)>'
+      scope: variable.function.prompt
+      captures:
+        1: variable.parameter.prompt
+
+    # Weight
+    - match: '(\*) *(\-)?([0-9\.]+) *$'
+      scope: entity.name
+      captures:
+        1: keyword.operator.prompt
+        2: keyword.operator.prompt
+        3: constant.numeric.prompt
+
+    - match: 'BUNDLE:'
+      scope: keyword.operator.word.prompt
+      push: bundle_name
+
+    - match: 'FILE:'
+      scope: keyword.operator.word.prompt
+      push: file_name
+
+    - match: 'BREAK'
+      scope: keyword.operator.word.prompt
+
+    - match: '\-{3,}'
+      scope: keyword.operator.prompt
+
+  line_comment:
+    - meta_scope: comment.line.prompt
+    - match: $
+      pop: true
+
+  bundle_name:
+    - meta_content_scope: string.prompt
+    - match: $
+      pop: true
+
+  file_name:
+    - meta_content_scope: variable.parameter.prompt
+    - match: $
+      pop: true
