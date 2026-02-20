@@ -323,18 +323,57 @@ class ParseLines(io.ComfyNode):
 
 
         def process_line(line):
-            if re.match(r'BREAK', line) is not None:
+            if re.search(r'BREAK', line) is not None:
                 raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
 
-            if re.match(r'\-{3,}', line) is not None:
+            if re.search(r'\-{3,}', line) is not None:
                 raise RuntimeError("Invalid --- found in text:\n\n" + text)
 
-            if re.match(r'BUNDLE:', line) is not None:
+            if re.search(r'BUNDLE:', line) is not None:
                 raise RuntimeError("Invalid BUNDLE: found in text:\n\n" + text)
 
-            if re.match(r'FILE:', line) is not None:
+            if re.search(r'FILE:', line) is not None:
                 raise RuntimeError("Invalid FILE: found in text:\n\n" + text)
 
+            # Search for a weight for the line
+            match = re.fullmatch(r'(.*)\* *([\-\d\.]+)', line)
+
+            if match:
+                prompt = match.group(1).strip()
+                weight = float(match.group(2))
+
+            else:
+                prompt = line
+                weight = 1.0
+
+            # If there are multiple bundles in a line, split them into separate prompts
+            for prompt in re.split(r'(<[a-z]+:[^>]*>)[, ]*', prompt):
+                if prompt != "":
+                    bundle = re.fullmatch(r'<bundle:([^>]*)>', prompt)
+
+                    if bundle:
+                        prompts.append({
+                            "bundle": bundle.group(1).strip(),
+                            "weight": weight,
+                        })
+
+                    else:
+                        lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
+
+                        if lora:
+                            prompts.append({
+                                "lora": lora.group(1).strip(),
+                                "weight": weight,
+                            })
+
+                        else:
+                            prompts.append({
+                                "prompt": prompt,
+                                "weight": weight,
+                            })
+
+
+        for line in text.splitlines():
             # TODO handle \\// and \\# properly
 
             # Remove // and # comments
@@ -347,62 +386,22 @@ class ParseLines(io.ComfyNode):
             line = line.strip()
 
             if line != "":
-                # Search for a weight for the line
-                match = re.search(r'(.*)\* *([\-\d\.]+)$', line)
-
-                if match:
-                    prompt = match.group(1)
-                    weight = float(match.group(2))
-
-                else:
-                    prompt = line
-                    weight = 1.0
-
-                # If there are multiple bundles in a line, split them into separate prompts
-                for prompt in re.split(r'(<[a-z]+:[^>]*>)[, ]*', prompt):
-                    if prompt != "":
-                        bundle = re.fullmatch(r'<bundle:([^>]*)>', prompt)
-
-                        if bundle:
-                            prompts.append({
-                                "bundle": bundle.group(1).strip(),
-                                "weight": weight,
-                            })
-
-                        else:
-                            lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
-
-                            if lora:
-                                prompts.append({
-                                    "lora": lora.group(1).strip(),
-                                    "weight": weight,
-                                })
-
-                            else:
-                                prompts.append({
-                                    "prompt": prompt,
-                                    "weight": weight,
-                                })
-
-
-        for line in text.splitlines():
-            if line != "":
-                if re.fullmatch(r' *(?:BREAK|\-{3,}) *', line):
+                if re.fullmatch(r'(?:BREAK|\-{3,})', line):
                     process_break(True)
 
                 else:
-                    match = re.fullmatch(r' *BUNDLE:(.*)', line)
+                    match = re.fullmatch(r'BUNDLE: *(.*)', line)
 
                     if match:
                         process_break(False)
-                        bundles.append({ "name": match.group(1).strip(), "children": [] })
+                        bundles.append({ "name": match.group(1), "children": [] })
 
                     else:
-                        match = re.fullmatch(r' *FILE:(.*)', line)
+                        match = re.fullmatch(r'FILE: *(.*)', line)
 
                         if match:
                             process_break(True)
-                            output.extend(cls.parse_lines(cls.read_file(match.group(1).strip())))
+                            output.extend(cls.parse_lines(cls.read_file(match.group(1))))
 
                         else:
                             process_line(line)
