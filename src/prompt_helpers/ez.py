@@ -296,10 +296,13 @@ class EZFilename(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="prompt_helpers: EZFilename",
+            display_name="EZ Filename",
+            description="Generates a filename.",
+            category="prompt_helpers",
             inputs=[
-                io.Image.Input("image"),
-                io.String.Input("folder"),
-                io.String.Input("filename"),
+                io.AnyType.Input("trigger", tooltip="When this input changes, it will re-run the EZ Filename."),
+                io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
+                io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
             ],
             outputs=[
                 io.String.Output(),
@@ -307,7 +310,7 @@ class EZFilename(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, folder, filename) -> io.NodeOutput:
+    def execute(cls, trigger, folder, filename) -> io.NodeOutput:
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
 
         # TODO make this work on Windows too
@@ -331,18 +334,14 @@ class EZGenerate(io.ComfyNode):
                 io.Clip.Input("clip", tooltip="The CLIP model used for encoding the text."),
                 io.Vae.Input("vae"),
 
-                io.String.Input("folder", default="", tooltip="The folder that the images will be saved in."),
-                io.String.Input("filename", default="%timestamp%", tooltip="The filename for the images.\n\n  %timestamp% is a UTC timestamp when the image was generated"),
-
                 io.Custom("EZ_PROMPT_SETTINGS").Input("prompt"),
                 io.Custom("EZ_SAMPLER_SETTINGS").Input("sampler"),
                 io.Custom("EZ_IMAGE_SETTINGS").Input("image"),
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(tooltip="The output image."),
                 io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
-                io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
+                io.Image.Output(display_name="FULL", tooltip="The full output image."),
             ],
             enable_expand=True,
         )
@@ -495,12 +494,9 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
-        filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
-
         return io.NodeOutput(
             vae_decode.out(0),
             vae_decode.out(0),
-            filename.out(0),
             expand=graph.finalize(),
         )
 
@@ -547,12 +543,9 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
-        filename = graph.node("prompt_helpers: EZFilename", image=vae_decode.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
-
         return io.NodeOutput(
             vae_decode.out(0),
             vae_decode.out(0),
-            filename.out(0),
             expand=graph.finalize(),
         )
 
@@ -641,12 +634,9 @@ class EZGenerate(io.ComfyNode):
             alpha=invert_mask.out(0),
         )
 
-        filename = graph.node("prompt_helpers: EZFilename", image=image_composite_masked.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
-
         return io.NodeOutput(
-            image_composite_masked.out(0),
             join_image.out(0),
-            filename.out(0),
+            image_composite_masked.out(0),
             expand=graph.finalize(),
         )
 
@@ -685,8 +675,8 @@ class EZGenerateSave(io.ComfyNode):
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(tooltip="The output image."),
                 io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
+                io.Image.Output(display_name="FULL", tooltip="The full output image."),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
             ],
             is_output_node=True,
@@ -699,11 +689,13 @@ class EZGenerateSave(io.ComfyNode):
 
         ez_generate = graph.node("prompt_helpers: EZGenerate", **kwargs)
 
-        save_image = graph.node("SaveImage", images=ez_generate.out(0), filename_prefix=ez_generate.out(1))
+        filename = graph.node("prompt_helpers: EZFilename", trigger=ez_generate.out(0), folder=kwargs["folder"], filename=kwargs["filename"])
+
+        save_image = graph.node("SaveImage", images=ez_generate.out(0), filename_prefix=filename.out(0))
 
         return io.NodeOutput(
             ez_generate.out(0),
             ez_generate.out(1),
-            ez_generate.out(2),
+            filename.out(0),
             expand=graph.finalize(),
         )
