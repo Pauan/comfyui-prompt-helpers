@@ -28,20 +28,17 @@ class JSON(io.ComfyTypeIO):
             return super().as_dict()
 
 
-class ProcessJson(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="prompt_helpers: ProcessJson",
-            display_name="Process JSON",
-            description="Processes and normalizes JSON.",
-            inputs=[
-                JSON.Input("json"),
-            ],
-            outputs=[
-                JSON.Output(display_name="JSON"),
-            ],
-        )
+class Chunk:
+    def __init__(self):
+        self.prompts = []
+        self.pushed = False
+
+
+class ProcessState:
+    def __init__(self):
+        self.seen_prompts = set()
+        self.bundles = {}
+        self.chunks = []
 
 
     @staticmethod
@@ -76,72 +73,72 @@ class ProcessJson(io.ComfyNode):
         return prompt
 
 
-    @classmethod
-    def process_children(cls, bundles, seen_bundles, seen_prompts, outer_weight, children):
-        output = []
+    def push_chunk(self, chunk):
+        if not chunk.pushed:
+            assert len(chunk.prompts) > 0
+            chunk.pushed = True
+            self.chunks.append({ "chunk": chunk.prompts })
 
+
+    def process_bundle(self, seen_bundles, outer_weight, item, name, chunk):
+        if item.get("enabled", True):
+            if not name in self.bundles:
+                raise RuntimeError("Bundle {} not found.".format(name))
+
+            if name in seen_bundles:
+                raise RuntimeError("Infinite recursion when inserting bundle {}".format(name))
+
+            bundle = self.bundles[name]
+
+            self.process_children(
+                seen_bundles.union({ name }),
+                outer_weight * item.get("weight", 1.0),
+                bundle["children"],
+                chunk,
+            )
+
+
+    def process_children(self, seen_bundles, outer_weight, children, chunk):
         for item in children:
             if "prompt" in item:
                 if item.get("enabled", True):
-                    prompt = cls.cleanup_prompt(item["prompt"])
+                    prompt = ProcessState.cleanup_prompt(item["prompt"])
 
                     if prompt != "":
-                        if prompt in seen_prompts:
+                        if prompt in self.seen_prompts:
                             raise RuntimeError("Duplicate prompt: {}".format(prompt))
                         else:
-                            seen_prompts.add(prompt)
+                            self.seen_prompts.add(prompt)
 
-                        output.append({
+                        chunk.prompts.append({
                             "prompt": prompt,
                             "weight": round(outer_weight * item.get("weight", 1.0), 2),
                         })
 
+                        self.push_chunk(chunk)
+
             elif "lora" in item:
                 if item.get("enabled", True):
-                    output.append({
+                    chunk.prompts.append({
                         "lora": item["lora"],
                         "weight": round(outer_weight * item.get("weight", 1.0), 2),
                     })
 
+                    self.push_chunk(chunk)
+
             elif "bundle" in item:
-                if item.get("enabled", True):
-                    name = item["bundle"]
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk())
 
-                    if not name in bundles:
-                        raise RuntimeError("Bundle {} not found.".format(name))
-
-                    if name in seen_bundles:
-                        raise RuntimeError("Infinite recursion when inserting bundle {}".format(name))
-
-                    bundle = bundles[name]
-
-                    output.extend(cls.process_children(
-                        bundles,
-                        seen_bundles.union({ name }),
-                        seen_prompts,
-                        outer_weight * item.get("weight", 1.0),
-                        bundle["children"],
-                    ))
+            elif "bundle-inline" in item:
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk)
 
             else:
                 raise RuntimeError("Unknown type.")
 
-        return output
 
-
-    """
-        Expands bundles, normalizing all weights.
-    """
-    @classmethod
-    def process_json(cls, json):
+    def process(self, json):
         if not isinstance(json, list):
             raise RuntimeError("JSON is not an array.")
-
-        bundles = {}
-        seen_bundles = frozenset()
-        seen_prompts = set()
-
-        output = []
 
         for item in json:
             if "bundles" in item:
@@ -152,27 +149,47 @@ class ProcessJson(io.ComfyNode):
                     if bundle.get("enabled", True):
                         name = bundle["name"]
 
-                        if name in bundles:
+                        if name in self.bundles:
                             raise RuntimeError("Duplicate bundle: {}".format(name))
 
                         else:
-                            bundles[name] = bundle
+                            self.bundles[name] = bundle
 
             elif "chunk" in item:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                prompts = cls.process_children(bundles, seen_bundles, seen_prompts, 1.0, item["chunk"])
-
-                if len(prompts) > 0:
-                    output.append({
-                        "chunk": prompts
-                    })
+                self.process_children(frozenset(), 1.0, item["chunk"], Chunk())
 
             else:
                 raise RuntimeError("Root must be either bundles or chunk.")
 
-        return output
+        return self.chunks
+
+
+class ProcessJson(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: ProcessJson",
+            display_name="Process JSON",
+            description="Processes and normalizes JSON.",
+            inputs=[
+                JSON.Input("json"),
+            ],
+            outputs=[
+                JSON.Output(display_name="JSON"),
+            ],
+        )
+
+
+    """
+        Expands bundles, normalizing all weights.
+    """
+    @classmethod
+    def process_json(cls, json):
+        state = ProcessState()
+        return state.process(json)
 
 
     """
@@ -322,6 +339,41 @@ class ParseLines(io.ComfyNode):
             prompts = []
 
 
+        def process_function(prompt, weight):
+            function = re.fullmatch(r'<([a-z\-]+):([^>]*)>', prompt)
+
+            if function:
+                name = function.group(1)
+                value = function.group(2).strip()
+
+                if name == "bundle":
+                    prompts.append({
+                        "bundle": value,
+                        "weight": weight,
+                    })
+
+                elif name == "bundle-inline":
+                    prompts.append({
+                        "bundle-inline": value,
+                        "weight": weight,
+                    })
+
+                elif name == "lora":
+                    prompts.append({
+                        "lora": value,
+                        "weight": weight,
+                    })
+
+                else:
+                    raise RuntimeError("Unknown function {}".format(prompt))
+
+            else:
+                prompts.append({
+                    "prompt": prompt,
+                    "weight": weight,
+                })
+
+
         def process_line(line):
             if re.search(r'BREAK', line) is not None:
                 raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
@@ -346,31 +398,10 @@ class ParseLines(io.ComfyNode):
                 prompt = line
                 weight = 1.0
 
-            # If there are multiple bundles in a line, split them into separate prompts
-            for prompt in re.split(r'(<[a-z]+:[^>]*>)[, ]*', prompt):
+            # If there are multiple functions in a line, split them into separate prompts
+            for prompt in re.split(r'(<[a-z\-]+:[^>]*>)[, ]*', prompt):
                 if prompt != "":
-                    bundle = re.fullmatch(r'<bundle:([^>]*)>', prompt)
-
-                    if bundle:
-                        prompts.append({
-                            "bundle": bundle.group(1).strip(),
-                            "weight": weight,
-                        })
-
-                    else:
-                        lora = re.fullmatch(r'<lora:([^>]*)>', prompt)
-
-                        if lora:
-                            prompts.append({
-                                "lora": lora.group(1).strip(),
-                                "weight": weight,
-                            })
-
-                        else:
-                            prompts.append({
-                                "prompt": prompt,
-                                "weight": weight,
-                            })
+                    process_function(prompt, weight)
 
 
         for line in text.splitlines():
