@@ -496,11 +496,15 @@ class EZGenerate(io.ComfyNode):
             else:
                 scale_method = "lanczos"
 
+            resize_type = {
+                "resize_type": "scale by multiplier",
+                "multiplier": multiplier,
+            }
+
             return graph.node(
                 "ResizeImageMaskNode",
-                resize_type="scale by multiplier",
+                resize_type,
                 input=mask,
-                multiplier=multiplier,
                 scale_method=scale_method,
             ).out(0)
 
