@@ -4,6 +4,7 @@ import comfy
 import folder_paths
 import datetime
 from .prompt import JSON
+from .upscale import get_image_tiles
 
 
 # Copied from Comfy-Org/ComfyUI/nodes.py
@@ -125,6 +126,36 @@ class EZImage(io.ComfyNode):
             "type": "IMAGE",
             "image": image,
             "image_weight": image_weight,
+            "batch_size": 1,
+            "select_index": -1,
+        })
+
+
+class EZUpscale(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZUpscale",
+            display_name="EZ Upscale",
+            category="prompt_helpers/image",
+            description="Generates a new image based on an existing image, but upscaled to a higher resolution.",
+            inputs=[
+                io.Image.Input("image"),
+                io.Float.Input("image_weight", default=0.0, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
+                io.Float.Input("multiplier", default=1.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+            ],
+            outputs=[
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image, image_weight, multiplier) -> io.NodeOutput:
+        return io.NodeOutput({
+            "type": "UPSCALE",
+            "image": image,
+            "image_weight": image_weight,
+            "multiplier": multiplier,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -347,6 +378,12 @@ class EZGenerate(io.ComfyNode):
         )
 
 
+    # https://github.com/Comfy-Org/ComfyUI/blob/b254cecd032e872766965415d120973811e9e360/comfy_extras/nodes_images.py#L573-L574
+    @staticmethod
+    def get_image_size(image):
+        return (image.shape[2], image.shape[1])
+
+
     @staticmethod
     def convert_prompt(graph, clip, vae, control_net, json):
         from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
@@ -386,11 +423,36 @@ class EZGenerate(io.ComfyNode):
         return (apply_loras.out(0), apply_loras.out(1))
 
 
+    @classmethod
+    def process_json(cls, graph, model, clip, vae, json, control_net=None):
+        process_json = graph.node("prompt_helpers: ProcessJson", json=json).out(0)
+
+        (model, clip) = cls.apply_loras(graph, model, clip, process_json)
+
+        (positive, negative) = cls.convert_prompt(graph, clip, vae, control_net, process_json)
+
+        return (model, clip, positive, negative)
+
+
+    @staticmethod
+    def repeat_batch_size(graph, image, batch_size, select_index):
+        if image == 1:
+            return image
+
+        else:
+            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=image, amount=batch_size).out(0)
+
+            if select_index > -1:
+                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch, batch_index=select_index, length=1).out(0)
+
+            return repeat_latent_batch
+
+
     @staticmethod
     def sampler(graph, model, clip, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         noise = graph.node("RandomNoise", noise_seed=seed)
 
-        empty = graph.node("CLIPTextEncode", text="", clip=clip)
+        #empty = graph.node("CLIPTextEncode", text="", clip=clip)
 
         guider = graph.node(
             "CFGGuider",
@@ -462,16 +524,12 @@ class EZGenerate(io.ComfyNode):
     def generate_text(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
-
-        empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"])
+        empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"]).out(0)
 
         if image["select_index"] > -1:
-            empty_image = graph.node("LatentFromBatch", samples=empty_image.out(0), batch_index=image["select_index"], length=1)
-
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
+            empty_image = graph.node("LatentFromBatch", samples=empty_image, batch_index=image["select_index"], length=1).out(0)
 
         sampler = cls.sampler(
             graph=graph,
@@ -484,7 +542,7 @@ class EZGenerate(io.ComfyNode):
             scheduler=sampler["scheduler"],
             positive=positive,
             negative=negative,
-            latent_image=empty_image.out(0),
+            latent_image=empty_image,
             denoise=1.0,
         )
 
@@ -505,22 +563,11 @@ class EZGenerate(io.ComfyNode):
     def generate_image(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
-
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
         vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
 
-        if image["batch_size"] == 1:
-            repeat_latent_batch = vae_encode
-
-        else:
-            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=vae_encode.out(0), amount=image["batch_size"])
-
-            if image["select_index"] > -1:
-                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch.out(0), batch_index=image["select_index"], length=1)
-
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
+        repeat_latent_batch = cls.repeat_batch_size(graph, vae_encode.out(0), image["batch_size"], image["select_index"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -533,7 +580,7 @@ class EZGenerate(io.ComfyNode):
             scheduler=sampler["scheduler"],
             positive=positive,
             negative=negative,
-            latent_image=repeat_latent_batch.out(0),
+            latent_image=repeat_latent_batch,
             denoise=(1.0 - image["image_weight"]),
         )
 
@@ -551,16 +598,127 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
+    def generate_upscale(cls, image, prompt, sampler, control_net=None, **kwargs):
+        if image["batch_size"] != 1:
+            raise RuntimeError("EZ Upscale must have a batch_size of 1")
+
+        graph = GraphBuilder()
+
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
+
+        #model = kwargs["model"]
+        #clip = kwargs["clip"]
+        #positive = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+        #negative = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+
+
+        if image["multiplier"] < 1.0:
+            scale_method = "area"
+        else:
+            scale_method = "lanczos"
+
+        resized = graph.node(
+            "ImageScaleBy",
+            image=image["image"],
+            scale_by=image["multiplier"],
+            upscale_method=scale_method,
+        ).out(0)
+
+
+        (image_width, image_height) = cls.get_image_size(image["image"])
+
+        image_width = int(image_width * image["multiplier"])
+        image_height = int(image_height * image["multiplier"])
+
+        tiles = []
+
+        # Chunks the image into 1024x1024 tiles with 256 pixels of overlap
+        for tile in set(get_image_tiles(image_width, image_height, 1024, 8)):
+            cropped = graph.node(
+                "ImageCrop",
+                image=resized,
+                x=tile.crop.left,
+                y=tile.crop.top,
+                width=tile.crop.width(),
+                height=tile.crop.height(),
+            )
+
+            vae_encode = graph.node("VAEEncode", pixels=cropped.out(0), vae=kwargs["vae"])
+
+            run_sampler = cls.sampler(
+                graph=graph,
+                model=model,
+                clip=clip,
+                seed=sampler["seed"],
+                steps=sampler["steps"],
+                cfg=prompt["weight"],
+                sampler_name=sampler["sampler_name"],
+                scheduler=sampler["scheduler"],
+                positive=positive,
+                negative=negative,
+                latent_image=vae_encode.out(0),
+                denoise=(1.0 - image["image_weight"]),
+            )
+
+            vae_decode = graph.node(
+                "VAEDecode",
+                samples=run_sampler,
+                vae=kwargs["vae"],
+            )
+
+            tile_mask = graph.node("SolidMask", value=0.0, width=tile.crop.width(), height=tile.crop.height())
+
+            mask = graph.node("SolidMask", value=1.0, width=tile.mask.width(), height=tile.mask.height())
+
+            mask = graph.node("FeatherMask", mask=mask.out(0), left=tile.grow.left, top=tile.grow.top, right=tile.grow.right, bottom=tile.grow.bottom)
+
+            mask = graph.node(
+                "MaskComposite",
+                destination=tile_mask.out(0),
+                source=mask.out(0),
+                operation="add",
+                x=(tile.mask.left - tile.crop.left),
+                y=(tile.mask.top - tile.crop.top),
+            )
+
+            tiles.append((tile, vae_decode.out(0), mask.out(0)))
+
+        composited = graph.node("EmptyImage", batch_size=1, color=0, width=image_width, height=image_height).out(0)
+
+        for (tile, image, mask) in tiles:
+            joined = graph.node(
+                "JoinImageWithAlpha",
+                image=image,
+                alpha=graph.node("InvertMask", mask=mask).out(0),
+            ).out(0)
+
+            save_image = graph.node("SaveImage", images=joined, filename_prefix="tmp/tiles/{} {}".format(tile.crop.left, tile.crop.top))
+
+            composited = graph.node(
+                "ImageCompositeMasked",
+                resize_source=False,
+                destination=composited,
+                source=image,
+                mask=mask,
+                x=tile.crop.left,
+                y=tile.crop.top,
+            ).out(0)
+
+
+        return io.NodeOutput(
+            composited,
+            composited,
+            expand=graph.finalize(),
+        )
+
+
+    @classmethod
     def generate_inpainting(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        json = graph.node("prompt_helpers: ProcessJson", json=prompt["json"]).out(0)
-
-        (model, clip) = cls.apply_loras(graph, kwargs["model"], kwargs["clip"], json)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
         grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
-
-        (positive, negative) = cls.convert_prompt(graph, clip, kwargs["vae"], control_net, json)
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
@@ -573,14 +731,7 @@ class EZGenerate(io.ComfyNode):
             noise_mask=True,
         )
 
-        if image["batch_size"] == 1:
-            repeat_latent_batch = inpaint_model_conditioning.out(2)
-
-        else:
-            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=inpaint_model_conditioning.out(2), amount=image["batch_size"]).out(0)
-
-            if image["select_index"] > -1:
-                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch, batch_index=image["select_index"], length=1).out(0)
+        repeat_latent_batch = cls.repeat_batch_size(graph, inpaint_model_conditioning.out(2), image["batch_size"], image["select_index"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -648,6 +799,9 @@ class EZGenerate(io.ComfyNode):
 
         elif image["type"] == "IMAGE":
             return cls.generate_image(image=image, **kwargs)
+
+        elif image["type"] == "UPSCALE":
+            return cls.generate_upscale(image=image, **kwargs)
 
         elif image["type"] == "INPAINT":
             return cls.generate_inpainting(image=image, **kwargs)
