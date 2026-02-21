@@ -98,6 +98,7 @@ class EZBlank(io.ComfyNode):
             "type": "BLANK",
             "width": width,
             "height": height,
+            "resize_multiplier": 1,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -126,9 +127,34 @@ class EZImage(io.ComfyNode):
             "type": "IMAGE",
             "image": image,
             "image_weight": image_weight,
+            "resize_multiplier": 1,
             "batch_size": 1,
             "select_index": -1,
         })
+
+
+class EZDetail(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZDetail",
+            display_name="EZ Detail",
+            category="prompt_helpers/image",
+            description="Generates more details, very useful for faces and eyes.",
+            inputs=[
+                io.Custom("EZ_IMAGE_SETTINGS").Input("image_settings", display_name="IMAGE"),
+                io.Float.Input("multiplier", default=2.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+            ],
+            outputs=[
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image_settings, multiplier) -> io.NodeOutput:
+        image_settings = image_settings.copy()
+        image_settings["resize_multiplier"] = multiplier
+        return io.NodeOutput(image_settings)
 
 
 class EZUpscaleTiled(io.ComfyNode):
@@ -160,6 +186,7 @@ class EZUpscaleTiled(io.ComfyNode):
             "multiplier": multiplier,
             "tile_size": tile_size,
             "tile_overlap": tile_overlap,
+            "resize_multiplier": 1,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -192,6 +219,7 @@ class EZInpaint(io.ComfyNode):
             "mask": mask,
             "image_weight": image_weight,
             "grow_mask": grow_mask,
+            "resize_multiplier": 1,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -382,12 +410,6 @@ class EZGenerate(io.ComfyNode):
         )
 
 
-    # https://github.com/Comfy-Org/ComfyUI/blob/b254cecd032e872766965415d120973811e9e360/comfy_extras/nodes_images.py#L573-L574
-    @staticmethod
-    def get_image_size(image):
-        return (image.shape[2], image.shape[1])
-
-
     @staticmethod
     def convert_prompt(graph, clip, vae, control_net, json):
         from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
@@ -436,6 +458,51 @@ class EZGenerate(io.ComfyNode):
         (positive, negative) = cls.convert_prompt(graph, clip, vae, control_net, process_json)
 
         return (model, clip, positive, negative)
+
+
+    # https://github.com/Comfy-Org/ComfyUI/blob/b254cecd032e872766965415d120973811e9e360/comfy_extras/nodes_images.py#L573-L574
+    @staticmethod
+    def get_image_size(image):
+        return (image.shape[2], image.shape[1])
+
+
+    @staticmethod
+    def resize_image(graph, image, multiplier):
+        if multiplier == 1.0:
+            return image
+
+        else:
+            if multiplier < 1.0:
+                scale_method = "area"
+            else:
+                scale_method = "lanczos"
+
+            return graph.node(
+                "ImageScaleBy",
+                image=image,
+                scale_by=multiplier,
+                upscale_method=scale_method,
+            ).out(0)
+
+
+    @staticmethod
+    def resize_mask(graph, mask, multiplier):
+        if multiplier == 1.0:
+            return mask
+
+        else:
+            if multiplier < 1.0:
+                scale_method = "area"
+            else:
+                scale_method = "lanczos"
+
+            return graph.node(
+                "ResizeImageMaskNode",
+                resize_type="scale by multiplier",
+                input=mask,
+                multiplier=multiplier,
+                scale_method=scale_method,
+            ).out(0)
 
 
     @staticmethod
@@ -530,7 +597,13 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        empty_image = graph.node("EmptyLatentImage", width=image["width"], height=image["height"], batch_size=image["batch_size"]).out(0)
+        empty_image = graph.node(
+            "EmptyLatentImage",
+            # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
+            width=int(round(image["width"] * image["resize_multiplier"])),
+            height=int(round(image["height"] * image["resize_multiplier"])),
+            batch_size=image["batch_size"],
+        ).out(0)
 
         if image["select_index"] > -1:
             empty_image = graph.node("LatentFromBatch", samples=empty_image, batch_index=image["select_index"], length=1).out(0)
@@ -556,9 +629,11 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
+        resized = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"])
+
         return io.NodeOutput(
-            vae_decode.out(0),
-            vae_decode.out(0),
+            resized,
+            resized,
             expand=graph.finalize(),
         )
 
@@ -569,7 +644,9 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        vae_encode = graph.node("VAEEncode", pixels=image["image"], vae=kwargs["vae"])
+        resized = cls.resize_image(graph, image["image"], image["resize_multiplier"])
+
+        vae_encode = graph.node("VAEEncode", pixels=resized, vae=kwargs["vae"])
 
         repeat_latent_batch = cls.repeat_batch_size(graph, vae_encode.out(0), image["batch_size"], image["select_index"])
 
@@ -594,9 +671,11 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
+        resized = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"])
+
         return io.NodeOutput(
-            vae_decode.out(0),
-            vae_decode.out(0),
+            resized,
+            resized,
             expand=graph.finalize(),
         )
 
@@ -615,24 +694,14 @@ class EZGenerate(io.ComfyNode):
         #positive = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
         #negative = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
 
-
-        if image["multiplier"] < 1.0:
-            scale_method = "area"
-        else:
-            scale_method = "lanczos"
-
-        resized = graph.node(
-            "ImageScaleBy",
-            image=image["image"],
-            scale_by=image["multiplier"],
-            upscale_method=scale_method,
-        ).out(0)
-
+        # TODO support EZ Detail
+        resized = cls.resize_image(graph, image["image"], image["multiplier"])
 
         (image_width, image_height) = cls.get_image_size(image["image"])
 
-        image_width = int(image_width * image["multiplier"])
-        image_height = int(image_height * image["multiplier"])
+        # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
+        image_width = int(round(image_width * image["multiplier"]))
+        image_height = int(round(image_height * image["multiplier"]))
 
         tiles = []
 
@@ -690,13 +759,13 @@ class EZGenerate(io.ComfyNode):
         composited = graph.node("EmptyImage", batch_size=1, color=0, width=image_width, height=image_height).out(0)
 
         for (tile, image, mask) in tiles:
-            joined = graph.node(
-                "JoinImageWithAlpha",
-                image=image,
-                alpha=graph.node("InvertMask", mask=mask).out(0),
-            ).out(0)
+            #joined = graph.node(
+            #    "JoinImageWithAlpha",
+            #    image=image,
+            #    alpha=graph.node("InvertMask", mask=mask).out(0),
+            #).out(0)
 
-            save_image = graph.node("SaveImage", images=joined, filename_prefix="tmp/tiles/{} {}".format(tile.crop.left, tile.crop.top))
+            #save_image = graph.node("SaveImage", images=joined, filename_prefix="tmp/tiles/{} {}".format(tile.crop.left, tile.crop.top))
 
             composited = graph.node(
                 "ImageCompositeMasked",
@@ -722,7 +791,11 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        grow_mask = graph.node("GrowMask", mask=image["mask"], expand=image["grow_mask"], tapered_corners=True)
+        resized = cls.resize_image(graph, image["image"], image["resize_multiplier"])
+
+        resized_mask = cls.resize_mask(graph, image["mask"], image["resize_multiplier"])
+
+        grow_mask = graph.node("GrowMask", mask=resized_mask, expand=image["grow_mask"], tapered_corners=True)
 
         # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
         inpaint_model_conditioning = graph.node(
@@ -730,7 +803,7 @@ class EZGenerate(io.ComfyNode):
             positive=positive,
             negative=negative,
             vae=kwargs["vae"],
-            pixels=image["image"],
+            pixels=resized,
             mask=grow_mask.out(0),
             noise_mask=True,
         )
@@ -759,12 +832,12 @@ class EZGenerate(io.ComfyNode):
         )
 
         if image["batch_size"] == 1 or image["select_index"] > -1:
-            repeat_image_batch = image["image"]
+            repeat_image_batch = resized
 
         else:
             repeat_image_batch = graph.node(
                 "RepeatImageBatch",
-                image=image["image"],
+                image=resized,
                 amount=image["batch_size"],
             ).out(0)
 
@@ -790,8 +863,8 @@ class EZGenerate(io.ComfyNode):
         )
 
         return io.NodeOutput(
-            join_image.out(0),
-            image_composite_masked.out(0),
+            cls.resize_image(graph, join_image.out(0), 1.0 / image["resize_multiplier"]),
+            cls.resize_image(graph, image_composite_masked.out(0), 1.0 / image["resize_multiplier"]),
             expand=graph.finalize(),
         )
 
