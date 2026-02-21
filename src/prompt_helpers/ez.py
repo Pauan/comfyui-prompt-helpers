@@ -131,18 +131,20 @@ class EZImage(io.ComfyNode):
         })
 
 
-class EZUpscale(io.ComfyNode):
+class EZUpscaleTiled(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="prompt_helpers: EZUpscale",
-            display_name="EZ Upscale",
+            node_id="prompt_helpers: EZUpscaleTiled",
+            display_name="EZ Upscale (Tiled)",
             category="prompt_helpers/image",
             description="Generates a new image based on an existing image, but upscaled to a higher resolution.",
             inputs=[
                 io.Image.Input("image"),
-                io.Float.Input("image_weight", default=0.0, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
-                io.Float.Input("multiplier", default=1.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+                io.Float.Input("image_weight", default=0.6, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
+                io.Float.Input("multiplier", default=2.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+                io.Int.Input("tile_size", default=1024, min=16, max=MAX_RESOLUTION, step=8, tooltip="The pixel width and height of each tile."),
+                io.Int.Input("tile_overlap", default=64, min=0, max=MAX_RESOLUTION, step=1, tooltip="Amount of pixels that overlap between each tile."),
             ],
             outputs=[
                 io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
@@ -150,12 +152,14 @@ class EZUpscale(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, image_weight, multiplier) -> io.NodeOutput:
+    def execute(cls, image, image_weight, multiplier, tile_size, tile_overlap) -> io.NodeOutput:
         return io.NodeOutput({
-            "type": "UPSCALE",
+            "type": "UPSCALE_TILED",
             "image": image,
             "image_weight": image_weight,
             "multiplier": multiplier,
+            "tile_size": tile_size,
+            "tile_overlap": tile_overlap,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -598,7 +602,7 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def generate_upscale(cls, image, prompt, sampler, control_net=None, **kwargs):
+    def generate_upscale_tiled(cls, image, prompt, sampler, control_net=None, **kwargs):
         if image["batch_size"] != 1:
             raise RuntimeError("EZ Upscale must have a batch_size of 1")
 
@@ -632,8 +636,8 @@ class EZGenerate(io.ComfyNode):
 
         tiles = []
 
-        # Chunks the image into 1024x1024 tiles with 256 pixels of overlap
-        for tile in set(get_image_tiles(image_width, image_height, 1024, 8)):
+        # Chunks the image into tiles
+        for tile in set(get_image_tiles(image_width, image_height, image["tile_size"], image["tile_overlap"])):
             cropped = graph.node(
                 "ImageCrop",
                 image=resized,
@@ -800,8 +804,8 @@ class EZGenerate(io.ComfyNode):
         elif image["type"] == "IMAGE":
             return cls.generate_image(image=image, **kwargs)
 
-        elif image["type"] == "UPSCALE":
-            return cls.generate_upscale(image=image, **kwargs)
+        elif image["type"] == "UPSCALE_TILED":
+            return cls.generate_upscale_tiled(image=image, **kwargs)
 
         elif image["type"] == "INPAINT":
             return cls.generate_inpainting(image=image, **kwargs)

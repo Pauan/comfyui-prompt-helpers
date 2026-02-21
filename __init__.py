@@ -9,7 +9,7 @@ class PromptHelpers(ComfyExtension):
             ez.EZBatch,
             ez.EZBlank,
             ez.EZImage,
-            ez.EZUpscale,
+            ez.EZUpscaleTiled,
             ez.EZInpaint,
             ez.EZPrompt,
             ez.EZSampler,
