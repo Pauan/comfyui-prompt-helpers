@@ -251,4 +251,4 @@ def test():
         print(tile.grow.print())
         print("----")
 
-test()
+#test()

@@ -9,9 +9,8 @@ from json import (dumps)
 
 
 # @TODO Hack that causes ComfyUI to always execute the node
-class AlwaysExecute(dict):
-    def __eq__(self, other):
-        return self is other
+class AlwaysExecute:
+    pass
 
 
 @io.comfytype(io_type="EZ_JSON")
