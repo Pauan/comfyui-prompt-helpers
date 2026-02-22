@@ -708,6 +708,9 @@ class EZGenerate(io.ComfyNode):
         if image["batch_size"] != 1:
             raise RuntimeError("EZ Upscale must have a batch_size of 1")
 
+        if image["resize_multiplier"] != 1.0:
+            raise RuntimeError("EZ Upscale cannot be combined with EZ Detail")
+
         graph = GraphBuilder()
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
@@ -717,7 +720,6 @@ class EZGenerate(io.ComfyNode):
         #positive = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
         #negative = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
 
-        # TODO support EZ Detail
         resized = cls.resize_image(graph, image["image"], image["multiplier"])
 
         (image_width, image_height) = cls.get_image_size(image["image"])
