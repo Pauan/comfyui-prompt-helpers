@@ -530,6 +530,7 @@ class EZGenerate(io.ComfyNode):
 
 
     # Everything that isn't masked will be transparent.
+    # @TODO Improve this after https://github.com/Comfy-Org/ComfyUI/issues/12580 is fixed
     @staticmethod
     def combine_image_with_mask(graph, image, mask):
         size = graph.node("GetImageSize", image=image)
