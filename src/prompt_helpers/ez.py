@@ -528,6 +528,23 @@ class EZGenerate(io.ComfyNode):
             return graph.node("ImageToMask", image=resized, channel="red").out(0)
 
 
+    # Everything that isn't masked will be transparent.
+    @staticmethod
+    def combine_image_with_mask(graph, image, mask):
+        size = graph.node("GetImageSize", image=image)
+
+        mask = graph.node("InvertMask", mask=mask)
+        mask = graph.node("MaskToImage", mask=mask.out(0))
+        mask = graph.node("RepeatImageBatch", image=mask.out(0), amount=size.out(2))
+        mask = graph.node("ImageToMask", image=mask.out(0), channel="red")
+
+        return graph.node(
+            "JoinImageWithAlpha",
+            image=image,
+            alpha=mask.out(0),
+        ).out(0)
+
+
     @staticmethod
     def repeat_batch_size(graph, image, batch_size, select_index):
         if image == 1:
@@ -878,17 +895,10 @@ class EZGenerate(io.ComfyNode):
             resize_source=False,
         )
 
-        # Everything that isn't masked will be transparent.
-        invert_mask = graph.node("InvertMask", mask=grow_mask.out(0))
-
-        join_image = graph.node(
-            "JoinImageWithAlpha",
-            image=vae_decode.out(0),
-            alpha=invert_mask.out(0),
-        )
+        joined_image = cls.combine_image_with_mask(graph, vae_decode.out(0), grow_mask.out(0))
 
         return io.NodeOutput(
-            cls.resize_image(graph, join_image.out(0), 1.0 / image["resize_multiplier"], image["scale_method"]),
+            cls.resize_image(graph, joined_image, 1.0 / image["resize_multiplier"], image["scale_method"]),
             cls.resize_image(graph, image_composite_masked.out(0), 1.0 / image["resize_multiplier"], image["scale_method"]),
             expand=graph.finalize(),
         )
