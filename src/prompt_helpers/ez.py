@@ -969,7 +969,10 @@ class EZGenerateSave(io.ComfyNode):
 
 
 class EZNotify(io.ComfyNode):
-    notifier = desktop_notifier.DesktopNotifier(app_name="ComfyUI")
+    notifier = desktop_notifier.DesktopNotifier(
+        app_name="ComfyUI",
+        app_icon=None,
+    )
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -988,6 +991,10 @@ class EZNotify(io.ComfyNode):
 
     @classmethod
     async def execute(cls, trigger, message) -> io.NodeOutput:
-        await cls.notifier.send(title="EZ Notify", message=message)
+        await cls.notifier.send(
+            title="EZ Notify",
+            message=message,
+            urgency=desktop_notifier.Urgency.Low,
+        )
 
         return io.NodeOutput()
