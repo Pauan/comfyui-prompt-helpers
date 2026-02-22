@@ -485,28 +485,42 @@ class EZGenerate(io.ComfyNode):
             ).out(0)
 
 
-    @staticmethod
-    def resize_mask(graph, mask, multiplier):
+    #@staticmethod
+    #def resize_mask(graph, mask, multiplier):
+    #    if multiplier == 1.0:
+    #        return mask
+    #
+    #    else:
+    #        if multiplier < 1.0:
+    #            scale_method = "area"
+    #        else:
+    #            scale_method = "lanczos"
+    #
+    #        resize_type = {
+    #            "resize_type": "scale by multiplier",
+    #            "multiplier": multiplier,
+    #        }
+    #
+    #        return graph.node(
+    #            "ResizeImageMaskNode",
+    #            resize_type=resize_type,
+    #            input=mask,
+    #            scale_method=scale_method,
+    #        ).out(0)
+
+
+    # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
+    @classmethod
+    def resize_mask(cls, graph, mask, multiplier):
         if multiplier == 1.0:
             return mask
 
         else:
-            if multiplier < 1.0:
-                scale_method = "area"
-            else:
-                scale_method = "lanczos"
+            image = graph.node("MaskToImage", mask=mask).out(0)
 
-            resize_type = {
-                "resize_type": "scale by multiplier",
-                "multiplier": multiplier,
-            }
+            resized = cls.resize_image(graph, image, multiplier)
 
-            return graph.node(
-                "ResizeImageMaskNode",
-                resize_type,
-                input=mask,
-                scale_method=scale_method,
-            ).out(0)
+            return graph.node("ImageToMask", image=resized, channel="red").out(0)
 
 
     @staticmethod
