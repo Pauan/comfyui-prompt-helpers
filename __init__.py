@@ -21,6 +21,7 @@ class PromptHelpers(ComfyExtension):
             ez.ConcatenateControlNet,
             ez.EmptyControlNet,
             ez.EZControlNet,
+            ez.EZNotify,
 
             prompt.ProcessJson,
             prompt.ParseLines,
