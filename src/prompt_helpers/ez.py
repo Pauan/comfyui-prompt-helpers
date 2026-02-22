@@ -3,6 +3,7 @@ from comfy_execution.graph_utils import GraphBuilder
 import comfy
 import folder_paths
 import datetime
+import desktop_notifier
 from .prompt import JSON
 from .upscale import get_image_tiles
 
@@ -965,3 +966,28 @@ class EZGenerateSave(io.ComfyNode):
             filename.out(0),
             expand=graph.finalize(),
         )
+
+
+class EZNotify(io.ComfyNode):
+    notifier = desktop_notifier.DesktopNotifier(app_name="ComfyUI")
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZNotify",
+            display_name="EZ Notify",
+            category="prompt_helpers",
+            description="Shows a desktop notification to let you know generation is done.",
+            inputs=[
+                io.AnyType.Input("trigger", tooltip="When this input changes, it will show the notification."),
+                io.String.Input("message", default="Job done", tooltip="The message which will be displayed in the notification."),
+            ],
+            outputs=[],
+            is_output_node=True,
+        )
+
+    @classmethod
+    async def execute(cls, trigger, message) -> io.NodeOutput:
+        await cls.notifier.send(title="EZ Notify", message=message)
+
+        return io.NodeOutput()
