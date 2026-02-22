@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prompt_helpers"
-version = "1.0.0"
+version = "1.1.0"
 description = "Nodes which make it much easier to manage prompts"
 authors = [
   {name = "Pauan", email = "pauanyu+github@pm.me"}
