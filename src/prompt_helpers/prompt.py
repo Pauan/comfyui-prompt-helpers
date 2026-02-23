@@ -8,11 +8,6 @@ import folder_paths
 from json import (dumps)
 
 
-# @TODO Hack that causes ComfyUI to always execute the node
-class AlwaysExecute:
-    pass
-
-
 @io.comfytype(io_type="EZ_JSON")
 class JSON(io.ComfyTypeIO):
     Type = list
@@ -294,7 +289,10 @@ class ParseLines(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, text):
         if "FILE:" in text:
-            return AlwaysExecute()
+            # @TODO Hack that causes ComfyUI to always execute the node
+            # https://github.com/Comfy-Org/ComfyUI/discussions/12546
+            return float("nan")
+
         else:
             return text
 
