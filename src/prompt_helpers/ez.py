@@ -101,6 +101,7 @@ class EZBlank(io.ComfyNode):
             "type": "BLANK",
             "width": width,
             "height": height,
+            "crop_region": None,
             "resize_multiplier": 1,
             "scale_method": DEFAULT_SCALING,
             "batch_size": 1,
@@ -118,6 +119,7 @@ class EZImage(io.ComfyNode):
             description="Generates a new image based on an existing image.",
             inputs=[
                 io.Image.Input("image"),
+                io.Mask.Input("mask", optional=True, tooltip="Only generates inside of the masked region."),
                 io.Float.Input("image_weight", default=0.0, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
             ],
             outputs=[
@@ -126,11 +128,13 @@ class EZImage(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, image_weight) -> io.NodeOutput:
+    def execute(cls, image, image_weight, mask=None) -> io.NodeOutput:
         return io.NodeOutput({
             "type": "IMAGE",
             "image": image,
+            "mask": mask,
             "image_weight": image_weight,
+            "crop_region": None,
             "resize_multiplier": 1,
             "scale_method": DEFAULT_SCALING,
             "batch_size": 1,
@@ -171,6 +175,30 @@ class EZDetail(io.ComfyNode):
         return io.NodeOutput(image_settings)
 
 
+class EZCrop(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZCrop",
+            display_name="EZ Crop",
+            category="prompt_helpers/image",
+            description="Crops the image + mask before generating.",
+            inputs=[
+                io.Custom("EZ_IMAGE_SETTINGS").Input("image_settings", display_name="IMAGE"),
+                io.BoundingBox.Input("crop_region"),
+            ],
+            outputs=[
+                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image_settings, crop_region) -> io.NodeOutput:
+        image_settings = image_settings.copy()
+        image_settings["crop_region"] = crop_region
+        return io.NodeOutput(image_settings)
+
+
 class EZUpscaleTiled(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -200,40 +228,6 @@ class EZUpscaleTiled(io.ComfyNode):
             "multiplier": multiplier,
             "tile_size": tile_size,
             "tile_overlap": tile_overlap,
-            "resize_multiplier": 1,
-            "scale_method": DEFAULT_SCALING,
-            "batch_size": 1,
-            "select_index": -1,
-        })
-
-
-class EZInpaint(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="prompt_helpers: EZInpaint",
-            display_name="EZ Inpaint",
-            category="prompt_helpers/image",
-            description="Generates a new image based on an existing image, but only in the masked area.",
-            inputs=[
-                io.Image.Input("image"),
-                io.Mask.Input("mask"),
-                io.Float.Input("image_weight", default=0.0, min=0.0, max=1.0, step=0.1, round=0.01, tooltip="How much the image should influence the result. Higher number means it closely matches the image, lower number means more random."),
-                io.Int.Input("grow_mask", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION, step=1),
-            ],
-            outputs=[
-                io.Custom("EZ_IMAGE_SETTINGS").Output(display_name="IMAGE"),
-            ],
-        )
-
-    @classmethod
-    def execute(cls, image, mask, image_weight, grow_mask) -> io.NodeOutput:
-        return io.NodeOutput({
-            "type": "INPAINT",
-            "image": image,
-            "mask": mask,
-            "image_weight": image_weight,
-            "grow_mask": grow_mask,
             "resize_multiplier": 1,
             "scale_method": DEFAULT_SCALING,
             "batch_size": 1,
@@ -419,8 +413,8 @@ class EZGenerate(io.ComfyNode):
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
                 io.Image.Output(display_name="FULL", tooltip="The full output image."),
+                io.Image.Output(display_name="PARTIAL", tooltip="The output image, but cropped and masked."),
             ],
             enable_expand=True,
         )
@@ -518,33 +512,63 @@ class EZGenerate(io.ComfyNode):
     # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
     @classmethod
     def resize_mask(cls, graph, mask, multiplier, scale_method):
-        if multiplier == 1.0:
-            return mask
+        if mask is not None:
+            if multiplier == 1.0:
+                return mask
+
+            else:
+                image = graph.node("MaskToImage", mask=mask).out(0)
+
+                resized = cls.resize_image(graph, image, multiplier, scale_method)
+
+                return graph.node("ImageToMask", image=resized, channel="red").out(0)
 
         else:
-            image = graph.node("MaskToImage", mask=mask).out(0)
-
-            resized = cls.resize_image(graph, image, multiplier, scale_method)
-
-            return graph.node("ImageToMask", image=resized, channel="red").out(0)
+            return None
 
 
     # Everything that isn't masked will be transparent.
     # @TODO Improve this after https://github.com/Comfy-Org/ComfyUI/issues/12580 is fixed
     @staticmethod
     def combine_image_with_mask(graph, image, mask):
-        size = graph.node("GetImageSize", image=image)
+        if mask is not None:
+            size = graph.node("GetImageSize", image=image)
 
-        mask = graph.node("InvertMask", mask=mask)
-        mask = graph.node("MaskToImage", mask=mask.out(0))
-        mask = graph.node("RepeatImageBatch", image=mask.out(0), amount=size.out(2))
-        mask = graph.node("ImageToMask", image=mask.out(0), channel="red")
+            mask = graph.node("InvertMask", mask=mask)
+            mask = graph.node("MaskToImage", mask=mask.out(0))
+            mask = graph.node("RepeatImageBatch", image=mask.out(0), amount=size.out(2))
+            mask = graph.node("ImageToMask", image=mask.out(0), channel="red")
 
-        return graph.node(
-            "JoinImageWithAlpha",
-            image=image,
-            alpha=mask.out(0),
-        ).out(0)
+            return graph.node(
+                "JoinImageWithAlpha",
+                image=image,
+                alpha=mask.out(0),
+            ).out(0)
+
+        else:
+            return image
+
+
+    @staticmethod
+    def crop_image_mask(graph, crop, image, mask):
+        x = 0
+        y = 0
+
+        # TODO clamp the crop_region to be within the image and mask
+        if crop:
+            width = crop.get("width", 0)
+            height = crop.get("height", 0)
+
+            if width > 0 and height > 0:
+                x = crop.get("x", 0)
+                y = crop.get("y", 0)
+
+                image = graph.node("ImageCrop", image=image, x=x, y=y, width=width, height=height).out(0)
+
+                if mask is not None:
+                    mask = graph.node("CropMask", mask=mask, x=x, y=y, width=width, height=height).out(0)
+
+        return (x, y, image, mask)
 
 
     @staticmethod
@@ -686,11 +710,36 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        resized = cls.resize_image(graph, image["image"], image["resize_multiplier"], image["scale_method"])
+        original_image = image["image"]
+        original_mask = image["mask"]
 
-        vae_encode = graph.node("VAEEncode", pixels=resized, vae=kwargs["vae"])
+        (x, y, cropped_image, cropped_mask) = cls.crop_image_mask(graph, image["crop_region"], original_image, original_mask)
 
-        repeat_latent_batch = cls.repeat_batch_size(graph, vae_encode.out(0), image["batch_size"], image["select_index"])
+        resized_image = cls.resize_image(graph, cropped_image, image["resize_multiplier"], image["scale_method"])
+        resized_mask = cls.resize_mask(graph, cropped_mask, image["resize_multiplier"], image["scale_method"])
+
+
+        if resized_mask is not None:
+            # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
+            inpaint_model_conditioning = graph.node(
+                "InpaintModelConditioning",
+                positive=positive,
+                negative=negative,
+                vae=kwargs["vae"],
+                pixels=resized_image,
+                mask=resized_mask,
+                noise_mask=True,
+            )
+
+            positive = inpaint_model_conditioning.out(0)
+            negative = inpaint_model_conditioning.out(1)
+            latent_image = inpaint_model_conditioning.out(2)
+
+        else:
+            latent_image = graph.node("VAEEncode", pixels=resized_image, vae=kwargs["vae"]).out(0)
+
+
+        repeat_latent_batch = cls.repeat_batch_size(graph, latent_image, image["batch_size"], image["select_index"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -713,11 +762,39 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
-        resized = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"], image["scale_method"])
+        downscaled_image = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"], image["scale_method"])
+
+
+        if (original_mask is not None) or image["crop_region"]:
+            if image["batch_size"] == 1 or image["select_index"] > -1:
+                repeat_image_batch = original_image
+
+            else:
+                repeat_image_batch = graph.node(
+                    "RepeatImageBatch",
+                    image=original_image,
+                    amount=image["batch_size"],
+                ).out(0)
+
+            # ComfyUI changes the image even outside of the mask, so we overwrite the image
+            # to guarantee that *only* the masked area will be changed
+            full_image = graph.node(
+                "ImageCompositeMasked",
+                destination=repeat_image_batch,
+                source=downscaled_image,
+                mask=original_mask,
+                x=x,
+                y=y,
+                resize_source=False,
+            ).out(0)
+
+        else:
+            full_image = downscaled_image
+
 
         return io.NodeOutput(
-            resized,
-            resized,
+            full_image,
+            cls.combine_image_with_mask(graph, downscaled_image, cropped_mask),
             expand=graph.finalize(),
         )
 
@@ -830,83 +907,6 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def generate_inpainting(cls, image, prompt, sampler, control_net=None, **kwargs):
-        graph = GraphBuilder()
-
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
-
-        resized = cls.resize_image(graph, image["image"], image["resize_multiplier"], image["scale_method"])
-
-        resized_mask = cls.resize_mask(graph, image["mask"], image["resize_multiplier"], image["scale_method"])
-
-        grow_mask = graph.node("GrowMask", mask=resized_mask, expand=image["grow_mask"], tapered_corners=True)
-
-        # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
-        inpaint_model_conditioning = graph.node(
-            "InpaintModelConditioning",
-            positive=positive,
-            negative=negative,
-            vae=kwargs["vae"],
-            pixels=resized,
-            mask=grow_mask.out(0),
-            noise_mask=True,
-        )
-
-        repeat_latent_batch = cls.repeat_batch_size(graph, inpaint_model_conditioning.out(2), image["batch_size"], image["select_index"])
-
-        sampler = cls.sampler(
-            graph=graph,
-            model=model,
-            clip=clip,
-            seed=sampler["seed"],
-            steps=sampler["steps"],
-            cfg=prompt["weight"],
-            sampler_name=sampler["sampler_name"],
-            scheduler=sampler["scheduler"],
-            positive=inpaint_model_conditioning.out(0),
-            negative=inpaint_model_conditioning.out(1),
-            latent_image=repeat_latent_batch,
-            denoise=(1.0 - image["image_weight"]),
-        )
-
-        vae_decode = graph.node(
-            "VAEDecode",
-            samples=sampler,
-            vae=kwargs["vae"],
-        )
-
-        if image["batch_size"] == 1 or image["select_index"] > -1:
-            repeat_image_batch = resized
-
-        else:
-            repeat_image_batch = graph.node(
-                "RepeatImageBatch",
-                image=resized,
-                amount=image["batch_size"],
-            ).out(0)
-
-        # ComfyUI changes the image even outside of the mask, so we overwrite the image
-        # to guarantee that *only* the masked area will be changed
-        image_composite_masked = graph.node(
-            "ImageCompositeMasked",
-            destination=repeat_image_batch,
-            source=vae_decode.out(0),
-            mask=grow_mask.out(0),
-            x=0,
-            y=0,
-            resize_source=False,
-        )
-
-        joined_image = cls.combine_image_with_mask(graph, vae_decode.out(0), grow_mask.out(0))
-
-        return io.NodeOutput(
-            cls.resize_image(graph, joined_image, 1.0 / image["resize_multiplier"], image["scale_method"]),
-            cls.resize_image(graph, image_composite_masked.out(0), 1.0 / image["resize_multiplier"], image["scale_method"]),
-            expand=graph.finalize(),
-        )
-
-
-    @classmethod
     def execute(cls, image, **kwargs) -> io.NodeOutput:
         if image["type"] == "BLANK":
             return cls.generate_text(image=image, **kwargs)
@@ -916,9 +916,6 @@ class EZGenerate(io.ComfyNode):
 
         elif image["type"] == "UPSCALE_TILED":
             return cls.generate_upscale_tiled(image=image, **kwargs)
-
-        elif image["type"] == "INPAINT":
-            return cls.generate_inpainting(image=image, **kwargs)
 
 
 class EZGenerateSave(io.ComfyNode):
@@ -943,8 +940,8 @@ class EZGenerateSave(io.ComfyNode):
                 io.Custom("EZ_CONTROL_NET").Input("control_net", optional=True),
             ],
             outputs=[
-                io.Image.Output(display_name="MASKED", tooltip="The output image, but the non-masked areas are transparent."),
                 io.Image.Output(display_name="FULL", tooltip="The full output image."),
+                io.Image.Output(display_name="PARTIAL", tooltip="The output image, but cropped and masked."),
                 io.String.Output(display_name="PATH", tooltip="The path used for the saved images."),
             ],
             is_output_node=True,
