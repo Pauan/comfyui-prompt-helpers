@@ -590,8 +590,8 @@ class DebugJSON(io.ComfyNode):
                 io.String.Output(display_name="NEGATIVE", tooltip="Processed JSON that only contains negative prompts."),
 
                 # TODO replace this when preview supports output lists
-                io.Custom("LIST").Output(display_name="POSITIVE_CHUNKS", tooltip="List of strings, one string per positive chunk"),
-                io.Custom("LIST").Output(display_name="NEGATIVE_CHUNKS", tooltip="List of strings, one string per negative chunk"),
+                io.String.Output(display_name="POSITIVE_CHUNKS", tooltip="List of strings, one string per positive chunk"),
+                io.String.Output(display_name="NEGATIVE_CHUNKS", tooltip="List of strings, one string per negative chunk"),
                 #io.String.Output(is_output_list=True, display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
             ],
         )
@@ -610,8 +610,8 @@ class DebugJSON(io.ComfyNode):
             dumps(json, indent=2),
             dumps(positive, indent=2),
             dumps(negative, indent=2),
-            positive_chunks,
-            negative_chunks,
+            dumps(positive_chunks, indent=2),
+            dumps(negative_chunks, indent=2),
         )
 
 
