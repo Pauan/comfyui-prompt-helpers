@@ -1,9 +1,12 @@
 from comfy_api.latest import ComfyExtension, io
 
-from .src.prompt_helpers import (ez, prompt)
+from .src.prompt_helpers import (ez, prompt, replacements)
 
 
 class PromptHelpers(ComfyExtension):
+    async def on_load(self) -> None:
+        await replacements.register()
+
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             ez.EZBatch,
