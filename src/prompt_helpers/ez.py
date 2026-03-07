@@ -911,8 +911,26 @@ class EZGenerate(io.ComfyNode):
         if image["type"] == "BLANK":
             return cls.generate_text(image=image, **kwargs)
 
+
         elif image["type"] == "IMAGE":
-            return cls.generate_image(image=image, **kwargs)
+            # Generate blank image
+            if (image["image_weight"] == 0.0) and (image["mask"] is None) and (image["crop_region"] is None):
+                (width, height) = cls.get_image_size(image["image"])
+
+                return cls.generate_text(image={
+                    "type": "BLANK",
+                    "width": width,
+                    "height": height,
+                    "crop_region": image["crop_region"],
+                    "resize_multiplier": image["resize_multiplier"],
+                    "scale_method": image["scale_method"],
+                    "batch_size": image["batch_size"],
+                    "select_index": image["select_index"],
+                }, **kwargs)
+
+            else:
+                return cls.generate_image(image=image, **kwargs)
+
 
         elif image["type"] == "UPSCALE_TILED":
             return cls.generate_upscale_tiled(image=image, **kwargs)
