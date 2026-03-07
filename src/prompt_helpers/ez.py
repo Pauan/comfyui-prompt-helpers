@@ -549,11 +549,8 @@ class EZGenerate(io.ComfyNode):
             return image
 
 
-    @staticmethod
-    def crop_image_mask(graph, crop, image, mask):
-        x = 0
-        y = 0
-
+    @classmethod
+    def crop_image_mask(cls, graph, crop, image, mask):
         # TODO clamp the crop_region to be within the image and mask
         if crop:
             width = crop.get("width", 0)
@@ -568,12 +565,31 @@ class EZGenerate(io.ComfyNode):
                 if mask is not None:
                     mask = graph.node("CropMask", mask=mask, x=x, y=y, width=width, height=height).out(0)
 
-        return (x, y, image, mask)
+                return (x, y, width, height, image, mask)
+
+        (width, height) = cls.get_image_size(image)
+        return (0, 0, width, height, image, mask)
+
+
+    @staticmethod
+    def empty_latent_image(graph, width, height, resize_multiplier, batch_size, select_index):
+        latent_image = graph.node(
+            "EmptyLatentImage",
+            # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
+            width=int(round(width * resize_multiplier)),
+            height=int(round(height * resize_multiplier)),
+            batch_size=batch_size,
+        ).out(0)
+
+        if select_index > -1:
+            latent_image = graph.node("LatentFromBatch", samples=latent_image, batch_index=select_index, length=1).out(0)
+
+        return latent_image
 
 
     @staticmethod
     def repeat_batch_size(graph, image, batch_size, select_index):
-        if image == 1:
+        if batch_size == 1:
             return image
 
         else:
@@ -663,16 +679,7 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
 
-        empty_image = graph.node(
-            "EmptyLatentImage",
-            # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
-            width=int(round(image["width"] * image["resize_multiplier"])),
-            height=int(round(image["height"] * image["resize_multiplier"])),
-            batch_size=image["batch_size"],
-        ).out(0)
-
-        if image["select_index"] > -1:
-            empty_image = graph.node("LatentFromBatch", samples=empty_image, batch_index=image["select_index"], length=1).out(0)
+        empty_image = cls.empty_latent_image(graph, image["width"], image["height"], image["resize_multiplier"], image["batch_size"], image["select_index"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -713,33 +720,35 @@ class EZGenerate(io.ComfyNode):
         original_image = image["image"]
         original_mask = image["mask"]
 
-        (x, y, cropped_image, cropped_mask) = cls.crop_image_mask(graph, image["crop_region"], original_image, original_mask)
+        (x, y, width, height, cropped_image, cropped_mask) = cls.crop_image_mask(graph, image["crop_region"], original_image, original_mask)
 
-        resized_image = cls.resize_image(graph, cropped_image, image["resize_multiplier"], image["scale_method"])
-        resized_mask = cls.resize_mask(graph, cropped_mask, image["resize_multiplier"], image["scale_method"])
-
-
-        if resized_mask is not None:
-            # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
-            inpaint_model_conditioning = graph.node(
-                "InpaintModelConditioning",
-                positive=positive,
-                negative=negative,
-                vae=kwargs["vae"],
-                pixels=resized_image,
-                mask=resized_mask,
-                noise_mask=True,
-            )
-
-            positive = inpaint_model_conditioning.out(0)
-            negative = inpaint_model_conditioning.out(1)
-            latent_image = inpaint_model_conditioning.out(2)
+        if image["image_weight"] == 0.0:
+            repeat_latent_batch = cls.empty_latent_image(graph, width, height, image["resize_multiplier"], image["batch_size"], image["select_index"])
 
         else:
-            latent_image = graph.node("VAEEncode", pixels=resized_image, vae=kwargs["vae"]).out(0)
+            resized_image = cls.resize_image(graph, cropped_image, image["resize_multiplier"], image["scale_method"])
+            resized_mask = cls.resize_mask(graph, cropped_mask, image["resize_multiplier"], image["scale_method"])
 
+            if resized_mask is not None:
+                # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
+                inpaint_model_conditioning = graph.node(
+                    "InpaintModelConditioning",
+                    positive=positive,
+                    negative=negative,
+                    vae=kwargs["vae"],
+                    pixels=resized_image,
+                    mask=resized_mask,
+                    noise_mask=True,
+                )
 
-        repeat_latent_batch = cls.repeat_batch_size(graph, latent_image, image["batch_size"], image["select_index"])
+                positive = inpaint_model_conditioning.out(0)
+                negative = inpaint_model_conditioning.out(1)
+                latent_image = inpaint_model_conditioning.out(2)
+
+            else:
+                latent_image = graph.node("VAEEncode", pixels=resized_image, vae=kwargs["vae"]).out(0)
+
+            repeat_latent_batch = cls.repeat_batch_size(graph, latent_image, image["batch_size"], image["select_index"])
 
         sampler = cls.sampler(
             graph=graph,
@@ -911,26 +920,8 @@ class EZGenerate(io.ComfyNode):
         if image["type"] == "BLANK":
             return cls.generate_text(image=image, **kwargs)
 
-
         elif image["type"] == "IMAGE":
-            # Generate blank image
-            if (image["image_weight"] == 0.0) and (image["mask"] is None) and (image["crop_region"] is None):
-                (width, height) = cls.get_image_size(image["image"])
-
-                return cls.generate_text(image={
-                    "type": "BLANK",
-                    "width": width,
-                    "height": height,
-                    "crop_region": image["crop_region"],
-                    "resize_multiplier": image["resize_multiplier"],
-                    "scale_method": image["scale_method"],
-                    "batch_size": image["batch_size"],
-                    "select_index": image["select_index"],
-                }, **kwargs)
-
-            else:
-                return cls.generate_image(image=image, **kwargs)
-
+            return cls.generate_image(image=image, **kwargs)
 
         elif image["type"] == "UPSCALE_TILED":
             return cls.generate_upscale_tiled(image=image, **kwargs)
