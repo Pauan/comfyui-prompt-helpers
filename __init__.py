@@ -34,6 +34,7 @@ class PromptHelpers(ComfyExtension):
             prompt.PromptToggle,
             prompt.ApplyLoras,
             prompt.DebugJSON,
+            prompt.DebugJSONPrompt,
         ]
 
 async def comfy_entrypoint() -> PromptHelpers:

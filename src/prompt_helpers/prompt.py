@@ -506,10 +506,10 @@ class ApplyLoras(io.ComfyNode):
             raise RuntimeError("Could not find lora: {}".format(path))
 
     @classmethod
-    def execute(cls, model, clip, json) -> io.NodeOutput:
-        graph = GraphBuilder()
-
+    def process_loras(cls, json):
         seen = set()
+
+        loras = []
 
         for item in json:
             if "chunk" in item:
@@ -526,17 +526,29 @@ class ApplyLoras(io.ComfyNode):
                         if weight < 0.0:
                             raise RuntimeError("Loras must have a positive weight.")
 
-                        node = graph.node(
-                            "LoraLoader",
-                            model=model,
-                            clip=clip,
-                            lora_name=path,
-                            strength_model=weight,
-                            strength_clip=weight,
-                        )
+                        loras.append({
+                            "path": path,
+                            "weight": weight,
+                        })
 
-                        model = node.out(0)
-                        clip = node.out(1)
+        return loras
+
+    @classmethod
+    def execute(cls, model, clip, json) -> io.NodeOutput:
+        graph = GraphBuilder()
+
+        for lora in cls.process_loras(json):
+            node = graph.node(
+                "LoraLoader",
+                model=model,
+                clip=clip,
+                lora_name=lora["path"],
+                strength_model=lora["weight"],
+                strength_clip=lora["weight"],
+            )
+
+            model = node.out(0)
+            clip = node.out(1)
 
         return io.NodeOutput(model, clip, expand=graph.finalize())
 
@@ -572,6 +584,34 @@ class ConcatenateJson(io.ComfyNode):
         return io.NodeOutput(concat)
 
 
+class DebugJSONPrompt(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: DebugJSONPrompt",
+            display_name="Debug JSON Prompt",
+            category="prompt_helpers/prompt",
+            description="Displays JSON prompt for debug purposes.",
+            inputs=[
+                io.Custom("JSON_PROMPT").Input("json_prompt"),
+            ],
+            outputs=[
+                io.String.Output(display_name="CHUNKS", tooltip="List of strings, one string per chunk"),
+
+                io.String.Output(display_name="MERGED", tooltip="Merges all of the chunks into a single string"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, json_prompt) -> io.NodeOutput:
+        chunks = ProcessJson.serialize_chunks(json_prompt)
+
+        return io.NodeOutput(
+            dumps(chunks, indent=2),
+            " ".join(chunks),
+        )
+
+
 class DebugJSON(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -584,15 +624,12 @@ class DebugJSON(io.ComfyNode):
                 JSON.Input("json"),
             ],
             outputs=[
-                io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input."),
+                io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input as a string."),
 
-                io.String.Output(display_name="POSITIVE", tooltip="Processed JSON that only contains positive prompts."),
-                io.String.Output(display_name="NEGATIVE", tooltip="Processed JSON that only contains negative prompts."),
+                io.Custom("JSON_PROMPT").Output(display_name="POSITIVE", tooltip="JSON that only contains positive prompts."),
+                io.Custom("JSON_PROMPT").Output(display_name="NEGATIVE", tooltip="JSON that only contains negative prompts."),
 
-                # TODO replace this when preview supports output lists
-                io.String.Output(display_name="POSITIVE_CHUNKS", tooltip="List of strings, one string per positive chunk"),
-                io.String.Output(display_name="NEGATIVE_CHUNKS", tooltip="List of strings, one string per negative chunk"),
-                #io.String.Output(is_output_list=True, display_name="POSITIVE", tooltip="List of strings, one string per chunk"),
+                io.String.Output(display_name="LORAS", tooltip="List of lora paths and weights"),
             ],
         )
 
@@ -603,15 +640,13 @@ class DebugJSON(io.ComfyNode):
         positive = ProcessJson.only_positive(processed)
         negative = ProcessJson.only_negative(processed)
 
-        positive_chunks = ProcessJson.serialize_chunks(positive)
-        negative_chunks = ProcessJson.serialize_chunks(negative)
+        loras = ApplyLoras.process_loras(processed)
 
         return io.NodeOutput(
             dumps(json, indent=2),
-            dumps(positive, indent=2),
-            dumps(negative, indent=2),
-            dumps(positive_chunks, indent=2),
-            dumps(negative_chunks, indent=2),
+            positive,
+            negative,
+            dumps(loras, indent=2),
         )
 
 
