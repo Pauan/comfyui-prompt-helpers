@@ -1,6 +1,7 @@
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
 import os.path
+import functools
 import re
 import torch
 import yaml
@@ -24,8 +25,9 @@ class JSON(io.ComfyTypeIO):
 
 
 class Chunk:
-    def __init__(self):
+    def __init__(self, region):
         self.prompts = []
+        self.region = region
         self.pushed = False
 
 
@@ -72,7 +74,7 @@ class ProcessState:
         if not chunk.pushed:
             assert len(chunk.prompts) > 0
             chunk.pushed = True
-            self.chunks.append({ "chunk": chunk.prompts })
+            self.chunks.append({ "chunk": chunk.prompts, "region": chunk.region })
 
 
     def process_bundle(self, seen_bundles, outer_weight, item, name, chunk):
@@ -100,10 +102,12 @@ class ProcessState:
                     prompt = ProcessState.cleanup_prompt(item["prompt"])
 
                     if prompt != "":
-                        if prompt in self.seen_prompts:
+                        key = (id(chunk.region), prompt)
+
+                        if key in self.seen_prompts:
                             raise RuntimeError("Duplicate prompt: {}".format(prompt))
                         else:
-                            self.seen_prompts.add(prompt)
+                            self.seen_prompts.add(key)
 
                         chunk.prompts.append({
                             "prompt": prompt,
@@ -122,7 +126,7 @@ class ProcessState:
                     self.push_chunk(chunk)
 
             elif "bundle" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk())
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(None))
 
             elif "bundle-inline" in item:
                 self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk)
@@ -154,7 +158,7 @@ class ProcessState:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                self.process_children(frozenset(), 1.0, item["chunk"], Chunk())
+                self.process_children(frozenset(), 1.0, item["chunk"], Chunk(item.get("region", None)))
 
             else:
                 raise RuntimeError("Root must be either bundles or chunk.")
@@ -197,6 +201,7 @@ class ProcessJson(io.ComfyNode):
         for item in json:
             if "chunk" in item:
                 prompts = []
+                region = item.get("region", None)
 
                 for item in item["chunk"]:
                     if "prompt" in item:
@@ -205,7 +210,8 @@ class ProcessJson(io.ComfyNode):
 
                 if len(prompts) > 0:
                     chunks.append({
-                        "chunk": prompts
+                        "chunk": prompts,
+                        "region": region,
                     })
 
         return chunks
@@ -221,6 +227,7 @@ class ProcessJson(io.ComfyNode):
         for item in json:
             if "chunk" in item:
                 prompts = []
+                region = item.get("region", None)
 
                 for item in item["chunk"]:
                     if "prompt" in item:
@@ -231,11 +238,32 @@ class ProcessJson(io.ComfyNode):
 
                 if len(prompts) > 0:
                     chunks.append({
-                        "chunk": prompts
+                        "chunk": prompts,
+                        "region": region,
                     })
 
         return chunks
 
+
+    """
+        Converts chunk into text strings, ready to be CLIP encoded.
+    """
+    @staticmethod
+    def serialize_chunk(children):
+        prompts = []
+
+        for item in children:
+            if "prompt" in item:
+                prompt = item["prompt"] + ","
+                weight = item["weight"]
+
+                if weight == 1.0:
+                    prompts.append(prompt)
+                else:
+                    prompts.append("({}:{}),".format(prompt, weight))
+
+        if len(prompts) > 0:
+            return " ".join(prompts)
 
     """
         Converts chunks into text strings, ready to be CLIP encoded.
@@ -246,20 +274,10 @@ class ProcessJson(io.ComfyNode):
 
         for item in json:
             if "chunk" in item:
-                prompts = []
+                prompt = cls.serialize_chunk(item["chunk"])
 
-                for item in item["chunk"]:
-                    if "prompt" in item:
-                        prompt = item["prompt"] + ","
-                        weight = item["weight"]
-
-                        if weight == 1.0:
-                            prompts.append(prompt)
-                        else:
-                            prompts.append("({}:{}),".format(prompt, weight))
-
-                if len(prompts) > 0:
-                    chunks.append(" ".join(prompts))
+                if prompt is not None:
+                    chunks.append(prompt)
 
         return chunks
 
@@ -310,6 +328,66 @@ class ParseLines(io.ComfyNode):
             raise RuntimeError("Could not find file: {}".format(path))
 
 
+    @staticmethod
+    def parse_region(region):
+        match = re.fullmatch(r' *\{([^\}]*)\} *', region)
+
+        if match:
+            fields = re.split(r', *', match.group(1))
+
+            x = None
+            y = None
+            width = None
+            height = None
+            strength = 1.0
+
+            for field in fields:
+                match = re.fullmatch(r' *([a-z]+) *: *([^ ]+) *', field)
+
+                if match:
+                    name = match.group(1)
+                    value = match.group(2)
+
+                    if name == "x":
+                        x = int(value)
+                    elif name == "y":
+                        y = int(value)
+                    elif name == "width":
+                        width = int(value)
+                    elif name == "height":
+                        height = int(value)
+                    elif name == "strength":
+                        strength = float(value)
+                    else:
+                        raise RuntimeError("Region field must be x, y, width, height, or strength")
+
+                else:
+                    raise RuntimeError("Region field must have syntax `name: value`")
+
+            if x is None:
+                raise RuntimeError("Region is missing x")
+
+            if y is None:
+                raise RuntimeError("Region is missing y")
+
+            if width is None:
+                raise RuntimeError("Region is missing width")
+
+            if height is None:
+                raise RuntimeError("Region is missing height")
+
+            return {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "strength": strength,
+            }
+
+        else:
+            raise RuntimeError("Region must have syntax `{ ... }`")
+
+
     @classmethod
     def parse_lines(cls, text):
         output = []
@@ -319,10 +397,11 @@ class ParseLines(io.ComfyNode):
 
         bundles = []
         prompts = []
+        region = None
 
 
         def process_break(reset_bundles):
-            nonlocal bundles, prompts
+            nonlocal bundles, prompts, region
 
             if len(bundles) > 0:
                 bundles[-1]["children"].extend(prompts)
@@ -332,9 +411,10 @@ class ParseLines(io.ComfyNode):
                     bundles = []
 
             elif len(prompts) > 0:
-                output.append({ "chunk": prompts })
+                output.append({ "chunk": prompts, "region": region })
 
             prompts = []
+            region = None
 
 
         def process_function(prompt, weight):
@@ -373,6 +453,37 @@ class ParseLines(io.ComfyNode):
 
 
         def process_line(line):
+            nonlocal region
+
+            if re.fullmatch(r'(?:BREAK|\-{3,})', line):
+                process_break(True)
+                return
+
+
+            match = re.fullmatch(r'BUNDLE: *(.*)', line)
+
+            if match:
+                process_break(False)
+                bundles.append({ "name": match.group(1), "children": [] })
+                return
+
+
+            match = re.fullmatch(r'FILE: *(.*)', line)
+
+            if match:
+                process_break(True)
+                output.extend(cls.parse_lines(cls.read_file(match.group(1))))
+                return
+
+
+            match = re.fullmatch(r'REGION: *(.*)', line)
+
+            if match:
+                process_break(True)
+                region = cls.parse_region(match.group(1))
+                return
+
+
             if re.search(r'BREAK', line) is not None:
                 raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
 
@@ -384,6 +495,9 @@ class ParseLines(io.ComfyNode):
 
             if re.search(r'FILE:', line) is not None:
                 raise RuntimeError("Invalid FILE: found in text:\n\n" + text)
+
+            if re.search(r'REGION:', line) is not None:
+                raise RuntimeError("Invalid REGION: found in text:\n\n" + text)
 
             # Search for a weight for the line
             match = re.fullmatch(r'(.*)\* *([\-\d\.]+)', line)
@@ -415,25 +529,7 @@ class ParseLines(io.ComfyNode):
             line = line.strip()
 
             if line != "":
-                if re.fullmatch(r'(?:BREAK|\-{3,})', line):
-                    process_break(True)
-
-                else:
-                    match = re.fullmatch(r'BUNDLE: *(.*)', line)
-
-                    if match:
-                        process_break(False)
-                        bundles.append({ "name": match.group(1), "children": [] })
-
-                    else:
-                        match = re.fullmatch(r'FILE: *(.*)', line)
-
-                        if match:
-                            process_break(True)
-                            output.extend(cls.parse_lines(cls.read_file(match.group(1))))
-
-                        else:
-                            process_line(line)
+                process_line(line)
 
         process_break(True)
         return output
@@ -665,49 +761,58 @@ class FromJSON(io.ComfyNode):
                 io.Conditioning.Output(display_name="POSITIVE"),
                 io.Conditioning.Output(display_name="NEGATIVE"),
             ],
+            enable_expand=True,
         )
 
     @staticmethod
-    def encode(clip, json):
-        chunks_text = ProcessJson.serialize_chunks(json)
-
+    def encode(graph, clip, json):
         chunks = []
 
-        for chunk in chunks_text:
-            # Encode using the same logic as CLIPTextEncode
-            tokens = clip.tokenize(chunk)
+        for item in json:
+            if "chunk" in item:
+                prompt = ProcessJson.serialize_chunk(item["chunk"])
 
-            encoded = clip.encode_from_tokens_scheduled(tokens)
-            assert len(encoded) == 1
+                if prompt is not None:
+                    region = item.get("region", None)
 
-            encoded = encoded[0]
-            assert len(encoded) == 2
+                    encode = graph.node("CLIPTextEncode", text=prompt, clip=clip).out(0)
 
-            chunks.append(encoded)
+                    if region is not None:
+                        encode = graph.node(
+                            "ConditioningSetArea",
+                            conditioning=encode,
+                            x=region["x"],
+                            y=region["y"],
+                            width=region["width"],
+                            height=region["height"],
+                            strength=region.get("strength", 1.0),
+                        ).out(0)
+
+                    chunks.append(encode)
 
         # Return an empty conditioning
         if len(chunks) == 0:
-            tokens = clip.tokenize("")
-            return clip.encode_from_tokens_scheduled(tokens)
+            return graph.node("CLIPTextEncode", text="", clip=clip).out(0)
 
+        # Use ConditioningConcat to combine the chunks
         else:
-            # Concatenate the tensors
-            concatenated = torch.cat([chunk[0] for chunk in chunks], 1)
-
-            # This always returns the metadata for the first chunk, this matches the behavior of ConditioningConcat
-            metadata = chunks[0][1].copy()
-
-            return [[concatenated, metadata]]
+            return functools.reduce(lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0), chunks)
 
     @classmethod
     def execute(cls, clip, json) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
+        graph = GraphBuilder()
+
         positive = ProcessJson.only_positive(json)
         negative = ProcessJson.only_negative(json)
 
-        return io.NodeOutput(cls.encode(clip, positive), cls.encode(clip, negative))
+        return io.NodeOutput(
+            cls.encode(graph, clip, positive),
+            cls.encode(graph, clip, negative),
+            expand=graph.finalize(),
+        )
 
 
 class PromptToggle(io.ComfyNode):
