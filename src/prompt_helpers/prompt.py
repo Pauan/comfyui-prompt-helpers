@@ -349,13 +349,13 @@ class ParseLines(io.ComfyNode):
                     value = match.group(2)
 
                     if name == "x":
-                        x = int(value)
+                        x = float(value)
                     elif name == "y":
-                        y = int(value)
+                        y = float(value)
                     elif name == "width":
-                        width = int(value)
+                        width = float(value)
                     elif name == "height":
-                        height = int(value)
+                        height = float(value)
                     elif name == "strength":
                         strength = float(value)
                     else:
@@ -766,7 +766,8 @@ class FromJSON(io.ComfyNode):
 
     @staticmethod
     def encode(graph, clip, json):
-        chunks = []
+        global_chunks = []
+        region_chunks = []
 
         for item in json:
             if "chunk" in item:
@@ -775,28 +776,56 @@ class FromJSON(io.ComfyNode):
                 if prompt is not None:
                     region = item.get("region", None)
 
-                    encode = graph.node("CLIPTextEncode", text=prompt, clip=clip).out(0)
+                    chunk = graph.node("CLIPTextEncode", text=prompt, clip=clip).out(0)
 
-                    if region is not None:
-                        encode = graph.node(
-                            "ConditioningSetArea",
-                            conditioning=encode,
-                            x=region["x"],
-                            y=region["y"],
-                            width=region["width"],
-                            height=region["height"],
-                            strength=region.get("strength", 1.0),
-                        ).out(0)
+                    if region is None:
+                        global_chunks.append(chunk)
+                    else:
+                        region_chunks.append((chunk, region))
 
-                    chunks.append(encode)
 
-        # Return an empty conditioning
-        if len(chunks) == 0:
-            return graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+        if len(global_chunks) == 0:
+            global_prompt = None
 
-        # Use ConditioningConcat to combine the chunks
+            # There must always be at least one chunk, so we create an empty chunk
+            final_chunks = [
+                graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+            ]
+
+        # Uses ConditioningConcat to combine the global chunks
         else:
-            return functools.reduce(lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0), chunks)
+            global_prompt = functools.reduce(lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0), global_chunks)
+
+            final_chunks = [
+                global_prompt
+            ]
+
+
+        for (chunk, region) in region_chunks:
+            # Concats the global prompt with the region prompt
+            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
+            if global_prompt is not None:
+                chunk = graph.node("ConditioningConcat", conditioning_to=global_prompt, conditioning_from=chunk).out(0)
+
+            chunk = graph.node(
+                "ConditioningSetAreaPercentage",
+                conditioning=chunk,
+                x=region["x"],
+                y=region["y"],
+                width=region["width"],
+                height=region["height"],
+                strength=region.get("strength", 1.0),
+            ).out(0)
+
+            final_chunks.append(chunk)
+
+
+        assert len(final_chunks) > 0
+
+        # Combines the regions together
+        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetAreaPercentage
+        return functools.reduce(lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0), final_chunks)
+
 
     @classmethod
     def execute(cls, clip, json) -> io.NodeOutput:
