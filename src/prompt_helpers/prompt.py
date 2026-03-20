@@ -43,6 +43,9 @@ class ProcessState:
         # Replace tabs with a space
         prompt = re.sub(r'\t+', r' ', prompt)
 
+        # Replace _ with a space
+        prompt = re.sub(r'_', r' ', prompt)
+
         # Replace newlines with a comma
         prompt = re.sub(r'[\n\r]+', r', ', prompt)
 
@@ -62,10 +65,10 @@ class ProcessState:
         prompt = re.sub(r' {2,}', r' ', prompt)
 
         # Replaces ( with \\(
-        prompt = re.sub(r'(?<!\\)\(', r'\\(', prompt)
+        #prompt = re.sub(r'(?<!\\)\(', r'\\(', prompt)
 
         # Replaces ) with \\)
-        prompt = re.sub(r'(?<!\\)\)', r'\\)', prompt)
+        #prompt = re.sub(r'(?<!\\)\)', r'\\)', prompt)
 
         return prompt
 
