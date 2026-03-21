@@ -3,6 +3,7 @@ from comfy_execution.graph_utils import GraphBuilder
 import os.path
 import functools
 import re
+import glob
 import torch
 import yaml
 import folder_paths
@@ -319,16 +320,14 @@ class ParseLines(io.ComfyNode):
 
 
     @staticmethod
-    def read_file(path):
-        # Copied from https://github.com/Comfy-Org/ComfyUI/blob/2687652530128435d5cdcfe2600751c8c4b75b88/folder_paths.py#L349-L366
-        full_path = os.path.join(os.path.join(folder_paths.models_dir, "prompts"), os.path.relpath(os.path.join("/", path), "/"))
+    def get_paths(path, root):
+        # TODO include_hidden=True
+        paths = glob.glob(path, root_dir=root, recursive=True)
 
-        if os.path.isfile(full_path):
-            with open(full_path, "r", encoding="utf-8") as f:
-                return f.read()
-
+        if len(paths) == 0:
+            raise RuntimeError("File not found: {}".format(path))
         else:
-            raise RuntimeError("Could not find file: {}".format(path))
+            return [os.path.realpath(os.path.join(root, path), strict=True) for path in paths]
 
 
     @staticmethod
@@ -392,7 +391,7 @@ class ParseLines(io.ComfyNode):
 
 
     @classmethod
-    def parse_lines(cls, text):
+    def parse_lines(cls, text, root, seen):
         output = []
 
         # Clean up the text so it doesn't have any tabs
@@ -475,7 +474,13 @@ class ParseLines(io.ComfyNode):
 
             if match:
                 process_break(True)
-                output.extend(cls.parse_lines(cls.read_file(match.group(1))))
+
+                for path in cls.get_paths(match.group(1), root):
+                    if not path in seen:
+                        seen.add(path)
+
+                        with open(path, "r", encoding="utf-8") as file:
+                            output.extend(cls.parse_lines(file.read(), os.path.dirname(path), seen))
                 return
 
 
@@ -540,7 +545,9 @@ class ParseLines(io.ComfyNode):
 
     @classmethod
     def execute(cls, text) -> io.NodeOutput:
-        return io.NodeOutput(cls.parse_lines(text))
+        # Copied from https://github.com/Comfy-Org/ComfyUI/blob/2687652530128435d5cdcfe2600751c8c4b75b88/folder_paths.py#L349-L366
+        root = os.path.join(folder_paths.models_dir, "prompts")
+        return io.NodeOutput(cls.parse_lines(text, root, set()))
 
 
 class ParseYAML(io.ComfyNode):
