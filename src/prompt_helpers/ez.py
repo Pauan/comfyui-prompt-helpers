@@ -6,12 +6,11 @@ import datetime
 import desktop_notifier
 from .prompt import JSON
 from .upscale import get_image_tiles
+from .image import (Crop, Detail, ProcessImage)
 
 
 # Copied from Comfy-Org/ComfyUI/nodes.py
 MAX_RESOLUTION=16384
-
-DEFAULT_SCALING = "lanczos"
 
 
 class EZCheckpoint(io.ComfyNode):
@@ -24,7 +23,7 @@ class EZCheckpoint(io.ComfyNode):
             description="Loads a checkpoint, sets clip skip, and applies Loras from the JSON.",
             inputs=[
                 io.Combo.Input("checkpoint", options=folder_paths.get_filename_list("checkpoints"), tooltip="The name of the checkpoint (model) to load."),
-                io.Int.Input("clip_skip", default=-2, min=-24, max=-1, step=1),
+                io.Int.Input("clip_skip", default=2, min=0, max=24, step=1),
             ],
             outputs=[
                 io.Model.Output(),
@@ -43,13 +42,16 @@ class EZCheckpoint(io.ComfyNode):
             ckpt_name=checkpoint,
         )
 
-        set_last_layer = graph.node(
-            "CLIPSetLastLayer",
-            clip=load_checkpoint.out(1),
-            stop_at_clip_layer=clip_skip,
-        )
+        clip = load_checkpoint.out(1)
 
-        return io.NodeOutput(load_checkpoint.out(0), set_last_layer.out(0), load_checkpoint.out(2), expand=graph.finalize())
+        if clip_skip > 0:
+            clip = graph.node(
+                "CLIPSetLastLayer",
+                clip=clip,
+                stop_at_clip_layer=-clip_skip,
+            ).out(0)
+
+        return io.NodeOutput(load_checkpoint.out(0), clip, load_checkpoint.out(2), expand=graph.finalize())
 
 
 class EZBatch(io.ComfyNode):
@@ -101,9 +103,8 @@ class EZBlank(io.ComfyNode):
             "type": "BLANK",
             "width": width,
             "height": height,
-            "crop_region": None,
-            "resize_multiplier": 1,
-            "scale_method": DEFAULT_SCALING,
+            "crop": None,
+            "detail": None,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -134,9 +135,8 @@ class EZImage(io.ComfyNode):
             "image": image,
             "mask": mask,
             "image_weight": image_weight,
-            "crop_region": None,
-            "resize_multiplier": 1,
-            "scale_method": DEFAULT_SCALING,
+            "crop": None,
+            "detail": None,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -158,7 +158,7 @@ class EZDetail(io.ComfyNode):
                 io.Combo.Input(
                     "scale_method",
                     options=["nearest-exact", "bilinear", "area", "bicubic", "lanczos"],
-                    default=DEFAULT_SCALING,
+                    default="lanczos",
                     tooltip="Interpolation algorithm. 'area' is best for downscaling, 'lanczos' for upscaling, 'nearest-exact' for pixel art.",
                 ),
             ],
@@ -170,8 +170,7 @@ class EZDetail(io.ComfyNode):
     @classmethod
     def execute(cls, image_settings, multiplier, scale_method) -> io.NodeOutput:
         image_settings = image_settings.copy()
-        image_settings["resize_multiplier"] = multiplier
-        image_settings["scale_method"] = scale_method
+        image_settings["detail"] = Detail(multiplier, scale_method)
         return io.NodeOutput(image_settings)
 
 
@@ -194,8 +193,16 @@ class EZCrop(io.ComfyNode):
 
     @classmethod
     def execute(cls, image_settings, crop_region) -> io.NodeOutput:
-        image_settings = image_settings.copy()
-        image_settings["crop_region"] = crop_region
+        width = crop_region.get("width", 0)
+        height = crop_region.get("height", 0)
+
+        if width > 0 and height > 0:
+            x = crop_region.get("x", 0)
+            y = crop_region.get("y", 0)
+
+            image_settings = image_settings.copy()
+            image_settings["crop"] = Crop(x, y, width, height)
+
         return io.NodeOutput(image_settings)
 
 
@@ -228,8 +235,8 @@ class EZUpscaleTiled(io.ComfyNode):
             "multiplier": multiplier,
             "tile_size": tile_size,
             "tile_overlap": tile_overlap,
-            "resize_multiplier": 1,
-            "scale_method": DEFAULT_SCALING,
+            "crop": None,
+            "detail": None,
             "batch_size": 1,
             "select_index": -1,
         })
@@ -421,7 +428,7 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def convert_prompt(graph, clip, vae, control_net, json):
+    def convert_prompt(graph, clip, vae, json, process, control_net):
         from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
 
         positive = from_json.out(0)
@@ -429,12 +436,14 @@ class EZGenerate(io.ComfyNode):
 
         if control_net:
             for item in control_net:
+                image = process.apply_to_image(graph, item["image"])
+
                 apply_controlnet = graph.node(
                     "ControlNetApplyAdvanced",
                     positive=positive,
                     negative=negative,
                     control_net=item["control_net"],
-                    image=item["image"],
+                    image=image,
                     strength=item["strength"],
                     start_percent=item["start_percent"],
                     end_percent=item["end_percent"],
@@ -460,12 +469,12 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def process_json(cls, graph, model, clip, vae, json, control_net=None):
+    def process_json(cls, graph, model, clip, vae, json, process, control_net=None):
         process_json = graph.node("prompt_helpers: ProcessJson", json=json).out(0)
 
         (model, clip) = cls.apply_loras(graph, model, clip, process_json)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, vae, control_net, process_json)
+        (positive, negative) = cls.convert_prompt(graph, clip, vae, process_json, process, control_net)
 
         return (model, clip, positive, negative)
 
@@ -474,57 +483,6 @@ class EZGenerate(io.ComfyNode):
     @staticmethod
     def get_image_size(image):
         return (image.shape[2], image.shape[1])
-
-
-    @staticmethod
-    def resize_image(graph, image, multiplier, scale_method):
-        if multiplier == 1.0:
-            return image
-
-        else:
-            return graph.node(
-                "ImageScaleBy",
-                image=image,
-                scale_by=multiplier,
-                upscale_method=scale_method,
-            ).out(0)
-
-
-    #@staticmethod
-    #def resize_mask(graph, mask, multiplier, scale_method):
-    #    if multiplier == 1.0:
-    #        return mask
-    #
-    #    else:
-    #        resize_type = {
-    #            "resize_type": "scale by multiplier",
-    #            "multiplier": multiplier,
-    #        }
-    #
-    #        return graph.node(
-    #            "ResizeImageMaskNode",
-    #            resize_type=resize_type,
-    #            input=mask,
-    #            scale_method=scale_method,
-    #        ).out(0)
-
-
-    # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
-    @classmethod
-    def resize_mask(cls, graph, mask, multiplier, scale_method):
-        if mask is not None:
-            if multiplier == 1.0:
-                return mask
-
-            else:
-                image = graph.node("MaskToImage", mask=mask).out(0)
-
-                resized = cls.resize_image(graph, image, multiplier, scale_method)
-
-                return graph.node("ImageToMask", image=resized, channel="red").out(0)
-
-        else:
-            return None
 
 
     # Everything that isn't masked will be transparent.
@@ -547,58 +505,6 @@ class EZGenerate(io.ComfyNode):
 
         else:
             return image
-
-
-    @classmethod
-    def crop_image_mask(cls, graph, crop, image, mask):
-        # TODO clamp the crop_region to be within the image and mask
-        if crop:
-            width = crop.get("width", 0)
-            height = crop.get("height", 0)
-
-            if width > 0 and height > 0:
-                x = crop.get("x", 0)
-                y = crop.get("y", 0)
-
-                image = graph.node("ImageCrop", image=image, x=x, y=y, width=width, height=height).out(0)
-
-                if mask is not None:
-                    mask = graph.node("CropMask", mask=mask, x=x, y=y, width=width, height=height).out(0)
-
-                return (x, y, width, height, image, mask)
-
-        (width, height) = cls.get_image_size(image)
-        return (0, 0, width, height, image, mask)
-
-
-    @staticmethod
-    def empty_latent_image(graph, width, height, resize_multiplier, batch_size, select_index):
-        latent_image = graph.node(
-            "EmptyLatentImage",
-            # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
-            width=int(round(width * resize_multiplier)),
-            height=int(round(height * resize_multiplier)),
-            batch_size=batch_size,
-        ).out(0)
-
-        if select_index > -1:
-            latent_image = graph.node("LatentFromBatch", samples=latent_image, batch_index=select_index, length=1).out(0)
-
-        return latent_image
-
-
-    @staticmethod
-    def repeat_batch_size(graph, image, batch_size, select_index):
-        if batch_size == 1:
-            return image
-
-        else:
-            repeat_latent_batch = graph.node("RepeatLatentBatch", samples=image, amount=batch_size).out(0)
-
-            if select_index > -1:
-                repeat_latent_batch = graph.node("LatentFromBatch", samples=repeat_latent_batch, batch_index=select_index, length=1).out(0)
-
-            return repeat_latent_batch
 
 
     @staticmethod
@@ -677,9 +583,18 @@ class EZGenerate(io.ComfyNode):
     def generate_text(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
+        process = ProcessImage(
+            image["crop"],
+            image["detail"],
+            image["width"],
+            image["height"],
+            image["batch_size"],
+            image["select_index"],
+        )
 
-        empty_image = cls.empty_latent_image(graph, image["width"], image["height"], image["resize_multiplier"], image["batch_size"], image["select_index"])
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], process, control_net)
+
+        empty_image = process.empty_latent(graph)
 
         sampler = cls.sampler(
             graph=graph,
@@ -702,7 +617,7 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
-        resized = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"], image["scale_method"])
+        resized = process.downscale_image(graph, vae_decode.out(0))
 
         return io.NodeOutput(
             resized,
@@ -715,19 +630,30 @@ class EZGenerate(io.ComfyNode):
     def generate_image(cls, image, prompt, sampler, control_net=None, **kwargs):
         graph = GraphBuilder()
 
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
-
         original_image = image["image"]
         original_mask = image["mask"]
 
-        (x, y, width, height, cropped_image, cropped_mask) = cls.crop_image_mask(graph, image["crop_region"], original_image, original_mask)
+        (image_width, image_height) = cls.get_image_size(original_image)
+
+        process = ProcessImage(
+            image["crop"],
+            image["detail"],
+            image_width,
+            image_height,
+            image["batch_size"],
+            image["select_index"],
+        )
+
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], process, control_net)
+
+        cropped_mask = process.crop_mask(graph, original_mask)
 
         if image["image_weight"] == 0.0:
-            repeat_latent_batch = cls.empty_latent_image(graph, width, height, image["resize_multiplier"], image["batch_size"], image["select_index"])
+            repeat_latent_batch = process.empty_latent(graph)
 
         else:
-            resized_image = cls.resize_image(graph, cropped_image, image["resize_multiplier"], image["scale_method"])
-            resized_mask = cls.resize_mask(graph, cropped_mask, image["resize_multiplier"], image["scale_method"])
+            resized_image = process.apply_to_image(graph, original_image)
+            resized_mask = process.resize_mask(graph, cropped_mask)
 
             if resized_mask is not None:
                 # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
@@ -748,7 +674,7 @@ class EZGenerate(io.ComfyNode):
             else:
                 latent_image = graph.node("VAEEncode", pixels=resized_image, vae=kwargs["vae"]).out(0)
 
-            repeat_latent_batch = cls.repeat_batch_size(graph, latent_image, image["batch_size"], image["select_index"])
+            repeat_latent_batch = process.repeat_latent(graph, latent_image)
 
         sampler = cls.sampler(
             graph=graph,
@@ -771,35 +697,11 @@ class EZGenerate(io.ComfyNode):
             vae=kwargs["vae"],
         )
 
-        downscaled_image = cls.resize_image(graph, vae_decode.out(0), 1.0 / image["resize_multiplier"], image["scale_method"])
+        downscaled_image = process.downscale_image(graph, vae_decode.out(0))
 
-
-        if (original_mask is not None) or image["crop_region"]:
-            if image["batch_size"] == 1 or image["select_index"] > -1:
-                repeat_image_batch = original_image
-
-            else:
-                repeat_image_batch = graph.node(
-                    "RepeatImageBatch",
-                    image=original_image,
-                    amount=image["batch_size"],
-                ).out(0)
-
-            # ComfyUI changes the image even outside of the mask, so we overwrite the image
-            # to guarantee that *only* the masked area will be changed
-            full_image = graph.node(
-                "ImageCompositeMasked",
-                destination=repeat_image_batch,
-                source=downscaled_image,
-                mask=original_mask,
-                x=x,
-                y=y,
-                resize_source=False,
-            ).out(0)
-
-        else:
-            full_image = downscaled_image
-
+        # ComfyUI changes the image even outside of the mask, so we overwrite the image
+        # to guarantee that *only* the masked area will be changed
+        full_image = process.composite_image(graph, original_image, downscaled_image, cropped_mask)
 
         return io.NodeOutput(
             full_image,
@@ -813,7 +715,7 @@ class EZGenerate(io.ComfyNode):
         if image["batch_size"] != 1:
             raise RuntimeError("EZ Upscale must have a batch_size of 1")
 
-        if image["resize_multiplier"] != 1.0:
+        if image["detail"] is not None:
             raise RuntimeError("EZ Upscale cannot be combined with EZ Detail")
 
         graph = GraphBuilder()
