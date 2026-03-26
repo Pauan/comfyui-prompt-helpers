@@ -4,9 +4,10 @@ import comfy
 import folder_paths
 import datetime
 import desktop_notifier
-from .prompt import JSON
+from .prompt import (JSON, ProcessJson)
 from .upscale import get_image_tiles
 from .image import (Crop, Detail, ProcessImage)
+from .utils import (fold)
 
 
 # Copied from Comfy-Org/ComfyUI/nodes.py
@@ -201,7 +202,7 @@ class EZCrop(io.ComfyNode):
             y = crop_region.get("y", 0)
 
             image_settings = image_settings.copy()
-            image_settings["crop"] = Crop(x, y, width, height)
+            image_settings["crop"] = Crop(x, x + width, y, y + height)
 
         return io.NodeOutput(image_settings)
 
@@ -428,13 +429,8 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def convert_prompt(graph, clip, vae, json, process, control_net):
-        from_json = graph.node("prompt_helpers: FromJSON", clip=clip, json=json)
-
-        positive = from_json.out(0)
-        negative = from_json.out(1)
-
-        if control_net:
+    def apply_controlnet(graph, vae, process, control_net, positive, negative):
+        if control_net is not None:
             for item in control_net:
                 image = process.apply_to_image(graph, item["image"])
 
@@ -457,6 +453,109 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
+    def encode_prompts(graph, clip, positive, negative):
+        # Combines the chunks together with ConditioningConcat
+        positive = fold(positive, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
+        negative = fold(negative, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
+
+        if positive is None:
+            positive = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+
+        if negative is None:
+            negative = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+
+        return (positive, negative)
+
+
+    @classmethod
+    def convert_prompt(cls, graph, clip, vae, json, process, control_net):
+        global_positive = []
+        global_negative = []
+
+        region_chunks = []
+
+        for (positive, negative, region) in ProcessJson.iter_chunks(json):
+            crop = None
+            strength = None
+
+            if region is not None:
+                crop = process.region_to_crop(region["x"], region["y"], region["width"], region["height"])
+
+                # Skip regions which are outside of the crop region
+                if crop.width() > 0 and crop.height() > 0:
+                    strength = region.get("strength", 1.0)
+                else:
+                    continue
+
+            positive = ProcessJson.serialize_prompts(positive)
+            negative = ProcessJson.serialize_prompts(negative)
+
+            if positive is not None:
+                positive = graph.node("CLIPTextEncode", text=positive, clip=clip).out(0)
+
+            if negative is not None:
+                negative = graph.node("CLIPTextEncode", text=negative, clip=clip).out(0)
+
+            if crop is None:
+                if positive is not None:
+                    global_positive.append(positive)
+
+                if negative is not None:
+                    global_negative.append(negative)
+
+            else:
+                chunk = {
+                    "positive": [],
+                    "negative": [],
+                    "crop": crop,
+                    "strength": strength,
+                }
+
+                if positive is not None:
+                    chunk["positive"].append(positive)
+
+                if negative is not None:
+                    chunk["negative"].append(negative)
+
+                region_chunks.append(chunk)
+
+
+        (positive, negative) = cls.encode_prompts(graph, clip, global_positive, global_negative)
+
+        final_positive = [positive]
+        final_negative = [negative]
+
+
+        cropped_mask = process.cropped_mask(graph)
+
+        for chunk in region_chunks:
+            # Concats the global prompt with the region prompt
+            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
+            chunk["positive"].extend(global_positive)
+            chunk["negative"].extend(global_negative)
+
+            (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
+
+            positive = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], positive)
+            negative = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], negative)
+
+            final_positive.append(positive)
+            final_negative.append(negative)
+
+
+        assert len(final_positive) > 0
+        assert len(final_negative) > 0
+
+        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
+        final_positive = fold(final_positive, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+        final_negative = fold(final_negative, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+
+        (final_positive, final_negative) = cls.apply_controlnet(graph, vae, process, control_net, final_positive, final_negative)
+
+        return (final_positive, final_negative)
+
+
+    @staticmethod
     def apply_loras(graph, model, clip, json):
         apply_loras = graph.node(
             "prompt_helpers: ApplyLoras",
@@ -470,7 +569,7 @@ class EZGenerate(io.ComfyNode):
 
     @classmethod
     def process_json(cls, graph, model, clip, vae, json, process, control_net=None):
-        process_json = graph.node("prompt_helpers: ProcessJson", json=json).out(0)
+        process_json = ProcessJson.process_json(json)
 
         (model, clip) = cls.apply_loras(graph, model, clip, process_json)
 

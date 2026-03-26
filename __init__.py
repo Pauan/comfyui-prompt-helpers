@@ -30,7 +30,6 @@ class PromptHelpers(ComfyExtension):
             prompt.ParseLines,
             prompt.ParseYAML,
             prompt.ConcatenateJson,
-            prompt.FromJSON,
             prompt.PromptToggle,
             prompt.ApplyLoras,
             prompt.DebugJSON,

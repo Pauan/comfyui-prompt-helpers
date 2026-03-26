@@ -1,27 +1,55 @@
-def clamp(value, low, high):
-    return max(low, min(value, high))
+from .utils import clamp
 
 
 class Crop:
-    def __init__(self, x, y, width, height):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
+    def __init__(self, left, right, top, bottom):
+        self.left = left
+        self.right = right
+        self.top = top
+        self.bottom = bottom
+
+
+    def width(self):
+        return self.right - self.left
+
+    def height(self):
+        return self.bottom - self.top
 
 
     def clamp(self, image_width, image_height):
-        x = clamp(self.x, 0, image_width)
-        y = clamp(self.y, 0, image_height)
+        left = clamp(self.left, 0, image_width)
+        right = clamp(self.right, 0, image_width)
 
-        width = clamp(self.width, 0, image_width - x)
-        height = clamp(self.height, 0, image_height - y)
+        top = clamp(self.top, 0, image_height)
+        bottom = clamp(self.bottom, 0, image_height)
 
-        return Crop(x, y, width, height)
+        if right < left:
+            right = left
+
+        if bottom < top:
+            bottom = top
+
+        return Crop(left, right, top, bottom)
+
+
+    def clamp_to_parent(self, parent):
+        left = clamp(self.left, parent.left, parent.right)
+        right = clamp(self.right, parent.left, parent.right)
+
+        top = clamp(self.top, parent.top, parent.bottom)
+        bottom = clamp(self.bottom, parent.top, parent.bottom)
+
+        if right < left:
+            right = left
+
+        if bottom < top:
+            bottom = top
+
+        return Crop(left, right, top, bottom)
 
 
     def apply_to_image(self, graph, image):
-        return graph.node("ImageCrop", image=image, x=self.x, y=self.y, width=self.width, height=self.height).out(0)
+        return graph.node("ImageCrop", image=image, x=self.left, y=self.top, width=self.width(), height=self.height()).out(0)
 
 
 class Detail:
@@ -92,8 +120,8 @@ class ProcessImage:
         height = self.height
 
         if self.crop is not None:
-            width = self.crop.width
-            height = self.crop.height
+            width = self.crop.width()
+            height = self.crop.height()
 
         if self.detail is not None:
             # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
@@ -152,7 +180,7 @@ class ProcessImage:
 
     def crop_mask(self, graph, mask):
         if mask is not None and self.crop is not None:
-            mask = graph.node("CropMask", mask=mask, x=self.crop.x, y=self.crop.y, width=self.crop.width, height=self.crop.height).out(0)
+            mask = graph.node("CropMask", mask=mask, x=self.crop.left, y=self.crop.top, width=self.crop.width(), height=self.crop.height()).out(0)
 
         return mask
 
@@ -173,8 +201,8 @@ class ProcessImage:
             y = 0
 
             if self.crop:
-                x = self.crop.x
-                y = self.crop.y
+                x = self.crop.left
+                y = self.crop.top
 
             return graph.node(
                 "ImageCompositeMasked",
@@ -185,3 +213,67 @@ class ProcessImage:
                 y=y,
                 resize_source=False,
             ).out(0)
+
+
+    def region_to_crop(self, x, y, width, height):
+        left = x * self.width
+        right = left + (width * self.width)
+
+        top = y * self.height
+        bottom = top + (height * self.height)
+
+        region = Crop(int(left), int(right), int(top), int(bottom)).clamp(self.width, self.height)
+
+        if self.crop:
+            region = region.clamp_to_parent(self.crop)
+
+        return region
+
+
+    def cropped_mask(self, graph):
+        width = self.width
+        height = self.height
+
+        if self.crop:
+            width = self.crop.width()
+            height = self.crop.height()
+
+        return graph.node(
+            "SolidMask",
+            value=0.0,
+            width=width,
+            height=height,
+        ).out(0)
+
+
+    def apply_set_area(self, graph, cropped_mask, crop, strength, conditioning):
+        x = 0
+        y = 0
+
+        if self.crop:
+            x = self.crop.left
+            y = self.crop.top
+
+        region = graph.node(
+            "SolidMask",
+            value=1.0,
+            width=crop.width(),
+            height=crop.height(),
+        ).out(0)
+
+        mask = graph.node(
+            "MaskComposite",
+            destination=cropped_mask,
+            source=region,
+            x=crop.left - x,
+            y=crop.top - y,
+            operation="add",
+        ).out(0)
+
+        return graph.node(
+            "ConditioningSetMask",
+            conditioning=conditioning,
+            mask=mask,
+            strength=strength,
+            set_cond_area="default",
+        ).out(0)

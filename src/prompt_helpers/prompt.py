@@ -195,6 +195,28 @@ class ProcessJson(io.ComfyNode):
         return state.process(json)
 
 
+    @staticmethod
+    def iter_chunks(json):
+        for item in json:
+            if "chunk" in item:
+                region = item.get("region", None)
+                positive = []
+                negative = []
+
+                for item in item["chunk"]:
+                    if "prompt" in item:
+                        if item["weight"] > 0.0:
+                            positive.append(item)
+
+                        elif item["weight"] < 0.0:
+                            item = item.copy()
+                            item["weight"] = -item["weight"]
+                            negative.append(item)
+
+                if len(positive) > 0 or len(negative) > 0:
+                    yield (positive, negative, region)
+
+
     """
         Filters JSON to only have positive weights.
     """
@@ -250,24 +272,24 @@ class ProcessJson(io.ComfyNode):
 
 
     """
-        Converts chunk into text strings, ready to be CLIP encoded.
+        Converts list of prompts into text strings, ready to be CLIP encoded.
     """
     @staticmethod
-    def serialize_chunk(children):
-        prompts = []
+    def serialize_prompts(prompts):
+        text = []
 
-        for item in children:
-            if "prompt" in item:
-                prompt = item["prompt"] + ","
-                weight = item["weight"]
+        for item in prompts:
+            prompt = item["prompt"] + ","
+            weight = item["weight"]
 
-                if weight == 1.0:
-                    prompts.append(prompt)
-                else:
-                    prompts.append("({}:{}),".format(prompt, weight))
+            if weight == 1.0:
+                text.append(prompt)
+            else:
+                text.append("({}:{}),".format(prompt, weight))
 
-        if len(prompts) > 0:
-            return " ".join(prompts)
+        if len(text) > 0:
+            return " ".join(text)
+
 
     """
         Converts chunks into text strings, ready to be CLIP encoded.
@@ -278,7 +300,7 @@ class ProcessJson(io.ComfyNode):
 
         for item in json:
             if "chunk" in item:
-                prompt = cls.serialize_chunk(item["chunk"])
+                prompt = cls.serialize_prompts((item for item in item["chunk"] if "prompt" in item))
 
                 if prompt is not None:
                     chunks.append(prompt)
@@ -753,104 +775,6 @@ class DebugJSON(io.ComfyNode):
             positive,
             negative,
             dumps(loras, indent=2),
-        )
-
-
-class FromJSON(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="prompt_helpers: FromJSON",
-            display_name="From JSON",
-            description="Converts a JSON prompt into a positive and negative conditioning.",
-            inputs=[
-                io.Clip.Input("clip"),
-                JSON.Input("json"),
-            ],
-            outputs=[
-                io.Conditioning.Output(display_name="POSITIVE"),
-                io.Conditioning.Output(display_name="NEGATIVE"),
-            ],
-            enable_expand=True,
-        )
-
-    @staticmethod
-    def encode(graph, clip, json):
-        global_chunks = []
-        region_chunks = []
-
-        for item in json:
-            if "chunk" in item:
-                prompt = ProcessJson.serialize_chunk(item["chunk"])
-
-                if prompt is not None:
-                    region = item.get("region", None)
-
-                    chunk = graph.node("CLIPTextEncode", text=prompt, clip=clip).out(0)
-
-                    if region is None:
-                        global_chunks.append(chunk)
-                    else:
-                        region_chunks.append((chunk, region))
-
-
-        if len(global_chunks) == 0:
-            global_prompt = None
-
-            # There must always be at least one chunk, so we create an empty chunk
-            final_chunks = [
-                graph.node("CLIPTextEncode", text="", clip=clip).out(0)
-            ]
-
-        # Uses ConditioningConcat to combine the global chunks
-        else:
-            global_prompt = functools.reduce(lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0), global_chunks)
-
-            final_chunks = [
-                global_prompt
-            ]
-
-
-        for (chunk, region) in region_chunks:
-            # Concats the global prompt with the region prompt
-            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
-            if global_prompt is not None:
-                chunk = graph.node("ConditioningConcat", conditioning_to=global_prompt, conditioning_from=chunk).out(0)
-
-            chunk = graph.node(
-                "ConditioningSetAreaPercentage",
-                conditioning=chunk,
-                x=region["x"],
-                y=region["y"],
-                width=region["width"],
-                height=region["height"],
-                strength=region.get("strength", 1.0),
-            ).out(0)
-
-            final_chunks.append(chunk)
-
-
-        assert len(final_chunks) > 0
-
-        # Combines the regions together
-        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetAreaPercentage
-        return functools.reduce(lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0), final_chunks)
-
-
-    @classmethod
-    def execute(cls, clip, json) -> io.NodeOutput:
-        if clip is None:
-            raise RuntimeError("clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
-
-        graph = GraphBuilder()
-
-        positive = ProcessJson.only_positive(json)
-        negative = ProcessJson.only_negative(json)
-
-        return io.NodeOutput(
-            cls.encode(graph, clip, positive),
-            cls.encode(graph, clip, negative),
-            expand=graph.finalize(),
         )
 
 
