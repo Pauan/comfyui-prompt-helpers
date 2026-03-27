@@ -481,7 +481,7 @@ class EZGenerate(io.ComfyNode):
                 crop = process.region_to_crop(region)
 
                 # Skip regions which are outside of the crop region
-                if crop.width() == 0 or crop.height() == 0:
+                if crop is None:
                     continue
 
             positive = ProcessJson.serialize_prompts(positive)
@@ -535,8 +535,8 @@ class EZGenerate(io.ComfyNode):
 
             (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
 
-            positive = process.apply_set_area(graph, cropped_mask, chunk["crop"], region.strength, region.feather, positive)
-            negative = process.apply_set_area(graph, cropped_mask, chunk["crop"], region.strength, region.feather, negative)
+            positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
+            negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
 
             final_positive.append(positive)
             final_negative.append(negative)

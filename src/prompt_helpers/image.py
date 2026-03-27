@@ -122,6 +122,13 @@ class ProcessImage:
         self.select_index = select_index
 
 
+    def image_crop(self):
+        if self.crop:
+            return self.crop
+        else:
+            return Crop(0, self.width, 0, self.height)
+
+
     def empty_latent(self, graph):
         width = self.width
         height = self.height
@@ -224,14 +231,16 @@ class ProcessImage:
         top = region.y.evaluate_int(self.height)
         bottom = top + region.height.evaluate_int(self.height)
 
-        return Crop(left, right, top, bottom).clamp_to_parent(self.image_crop())
+        (x_feather, y_feather) = region.evaluate_feather(self.width, self.height)
 
+        crop = Crop(left, right, top, bottom).pad(x_feather, y_feather)
 
-    def image_crop(self):
-        if self.crop:
-            return self.crop
+        clamped = crop.clamp_to_parent(self.image_crop())
+
+        if clamped.width() == 0 or clamped.height() == 0:
+            return None
         else:
-            return Crop(0, self.width, 0, self.height)
+            return crop
 
 
     def cropped_mask(self, graph):
@@ -245,22 +254,20 @@ class ProcessImage:
         ).out(0)
 
 
-    def apply_set_area(self, graph, cropped_mask, crop, strength, feather, conditioning):
+    def apply_set_area(self, graph, region, cropped_mask, crop, conditioning):
         image_crop = self.image_crop()
 
+        (x_feather, y_feather) = region.evaluate_feather(self.width, self.height)
+
+        # Crop which contains only solid white pixels
+        solid_crop = crop.pad(-x_feather, -y_feather).clamp_to_parent(image_crop)
+
         # Region occupies the entire image, no need for masking
-        if crop == image_crop and strength == 1.0:
+        if solid_crop == image_crop and region.strength == 1.0:
             return conditioning
 
         else:
-            x_feather = max(feather.evaluate_int(self.width), 0)
-            y_feather = max(feather.evaluate_int(self.height), 0)
-
-            crop = crop.pad(x_feather, y_feather)
-
-            clamped = crop.clamp_to_parent(image_crop)
-
-            region = graph.node(
+            mask = graph.node(
                 "SolidMask",
                 value=1.0,
                 width=crop.width(),
@@ -268,7 +275,12 @@ class ProcessImage:
             ).out(0)
 
             if x_feather > 0 or y_feather > 0:
-                region = graph.node("FeatherMask", mask=region, left=x_feather, top=y_feather, right=x_feather, bottom=y_feather).out(0)
+                mask = graph.node("FeatherMask", mask=mask, left=x_feather, top=y_feather, right=x_feather, bottom=y_feather).out(0)
+
+            clamped = crop.clamp_to_parent(image_crop)
+
+            assert clamped.width() > 0
+            assert clamped.height() > 0
 
             if clamped != crop:
                 x = clamped.left - crop.left
@@ -277,9 +289,9 @@ class ProcessImage:
                 assert x >= 0
                 assert y >= 0
 
-                region = graph.node(
+                mask = graph.node(
                     "CropMask",
-                    mask=region,
+                    mask=mask,
                     x=x,
                     y=y,
                     width=clamped.width(),
@@ -287,10 +299,10 @@ class ProcessImage:
                 ).out(0)
 
             if clamped != image_crop:
-                region = graph.node(
+                mask = graph.node(
                     "MaskComposite",
                     destination=cropped_mask,
-                    source=region,
+                    source=mask,
                     x=clamped.left - image_crop.left,
                     y=clamped.top - image_crop.top,
                     operation="add",
@@ -299,7 +311,7 @@ class ProcessImage:
             return graph.node(
                 "ConditioningSetMask",
                 conditioning=conditioning,
-                mask=region,
-                strength=strength,
+                mask=mask,
+                strength=region.strength,
                 set_cond_area="default",
             ).out(0)

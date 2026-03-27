@@ -35,6 +35,12 @@ class Region:
         self.strength = strength
         self.feather = feather
 
+    def evaluate_feather(self, width, height):
+        return (
+            max(self.feather.evaluate_int(width), 0),
+            max(self.feather.evaluate_int(height), 0),
+        )
+
     @staticmethod
     def parse_int(json):
         if isinstance(json, int):
