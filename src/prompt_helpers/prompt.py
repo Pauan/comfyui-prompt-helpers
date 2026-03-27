@@ -444,40 +444,29 @@ class ParseLines(io.ComfyNode):
 
     @classmethod
     def parse_region(cls, region):
-        x = None
-        y = None
-        width = None
-        height = None
+        x = 0
+        y = 0
+        width = { "percent": 1.0 }
+        height = { "percent": 1.0 }
         strength = 1.0
         feather = 0
 
-        for (key, value) in cls.parse_object(region):
-            if key == "x":
-                x = cls.parse_percent(value)
-            elif key == "y":
-                y = cls.parse_percent(value)
-            elif key == "width":
-                width = cls.parse_percent(value)
-            elif key == "height":
-                height = cls.parse_percent(value)
-            elif key == "strength":
-                strength = float(value)
-            elif key == "feather":
-                feather = cls.parse_percent(value)
-            else:
-                raise RuntimeError("Object field must be x, y, width, height, strength, or feather")
-
-        if x is None:
-            raise RuntimeError("Object is missing x")
-
-        if y is None:
-            raise RuntimeError("Object is missing y")
-
-        if width is None:
-            raise RuntimeError("Object is missing width")
-
-        if height is None:
-            raise RuntimeError("Object is missing height")
+        if re.fullmatch(r' *', region) is None:
+            for (key, value) in cls.parse_object(region):
+                if key == "x":
+                    x = cls.parse_percent(value)
+                elif key == "y":
+                    y = cls.parse_percent(value)
+                elif key == "width":
+                    width = cls.parse_percent(value)
+                elif key == "height":
+                    height = cls.parse_percent(value)
+                elif key == "strength":
+                    strength = float(value)
+                elif key == "feather":
+                    feather = cls.parse_percent(value)
+                else:
+                    raise RuntimeError("Object field must be x, y, width, height, strength, or feather")
 
         return {
             "x": x,

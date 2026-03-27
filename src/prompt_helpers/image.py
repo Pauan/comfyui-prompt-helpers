@@ -23,6 +23,16 @@ class Crop:
         return Crop(self.left - horizontal, self.right + horizontal, self.top - vertical, self.bottom + vertical)
 
 
+    def scale(self, multiplier):
+        # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
+        return Crop(
+            int(round(self.left * multiplier)),
+            int(round(self.right * multiplier)),
+            int(round(self.top * multiplier)),
+            int(round(self.bottom * multiplier)),
+        )
+
+
     def clamp(self, image_width, image_height):
         left = clamp(self.left, 0, image_width)
         right = clamp(self.right, 0, image_width)
@@ -130,19 +140,12 @@ class ProcessImage:
 
 
     def empty_latent(self, graph):
-        width = self.width
-        height = self.height
-
-        if self.crop is not None:
-            width = self.crop.width()
-            height = self.crop.height()
+        crop = self.image_crop()
 
         if self.detail is not None:
-            # https://github.com/Comfy-Org/ComfyUI/blob/602b2505a4ffeff4a732b8727ce27d3c2a1ef752/comfy_extras/nodes_post_processing.py#L284-L285
-            width = int(round(width * self.detail.resize_multiplier))
-            height = int(round(height * self.detail.resize_multiplier))
+            crop = crop.scale(self.detail.resize_multiplier)
 
-        latent_image = graph.node("EmptyLatentImage", width=width, height=height, batch_size=self.batch_size).out(0)
+        latent_image = graph.node("EmptyLatentImage", width=crop.width(), height=crop.height(), batch_size=self.batch_size).out(0)
 
         if self.select_index > -1:
             latent_image = graph.node("LatentFromBatch", samples=latent_image, batch_index=self.select_index, length=1).out(0)
