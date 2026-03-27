@@ -27,13 +27,14 @@ class Percent:
 
 
 class Region:
-    def __init__(self, x, y, width, height, strength, feather):
+    def __init__(self, x, y, width, height, strength, feather, isolated):
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.strength = strength
         self.feather = feather
+        self.isolated = isolated
 
     def evaluate_feather(self, width, height):
         return (
@@ -61,6 +62,7 @@ class Region:
             cls.parse_int(json["height"]),
             json.get("strength", 1.0),
             cls.parse_int(json.get("feather", 0)),
+            json.get("isolated", True),
         )
 
 
@@ -442,6 +444,20 @@ class ParseLines(io.ComfyNode):
             return int(value)
 
 
+    @staticmethod
+    def parse_bool(value):
+        value = value.strip()
+
+        if value == "true":
+            return True
+
+        elif value == "false":
+            return False
+
+        else:
+            raise RuntimeError("Boolean must be true or false")
+
+
     @classmethod
     def parse_region(cls, region):
         x = 0
@@ -450,6 +466,7 @@ class ParseLines(io.ComfyNode):
         height = { "percent": 1.0 }
         strength = 1.0
         feather = 0
+        isolated = True
 
         if re.fullmatch(r' *', region) is None:
             for (key, value) in cls.parse_object(region):
@@ -465,8 +482,10 @@ class ParseLines(io.ComfyNode):
                     strength = float(value)
                 elif key == "feather":
                     feather = cls.parse_percent(value)
+                elif key == "isolated":
+                    isolated = cls.parse_bool(value)
                 else:
-                    raise RuntimeError("Object field must be x, y, width, height, strength, or feather")
+                    raise RuntimeError("Object field must be x, y, width, height, strength, feather, or isolated")
 
         return {
             "x": x,
@@ -475,6 +494,7 @@ class ParseLines(io.ComfyNode):
             "height": height,
             "strength": strength,
             "feather": feather,
+            "isolated": isolated,
         }
 
 

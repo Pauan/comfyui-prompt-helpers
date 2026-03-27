@@ -311,10 +311,15 @@ class ProcessImage:
                     operation="add",
                 ).out(0)
 
+            if region.isolated:
+                cond_area = "mask bounds"
+            else:
+                cond_area = "default"
+
             return graph.node(
                 "ConditioningSetMask",
                 conditioning=conditioning,
                 mask=mask,
                 strength=region.strength,
-                set_cond_area="default",
+                set_cond_area=cond_area,
             ).out(0)
