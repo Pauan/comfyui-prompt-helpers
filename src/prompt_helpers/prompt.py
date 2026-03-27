@@ -10,6 +10,54 @@ import folder_paths
 from json import (dumps)
 
 
+class Pixels:
+    def __init__(self, pixels):
+        self.pixels = pixels
+
+    def evaluate_int(self, value):
+        return self.pixels
+
+
+class Percent:
+    def __init__(self, percent):
+        self.percent = percent
+
+    def evaluate_int(self, value):
+        return int(round(self.percent * value))
+
+
+class Region:
+    def __init__(self, x, y, width, height, strength, feather):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.strength = strength
+        self.feather = feather
+
+    @staticmethod
+    def parse_int(json):
+        if isinstance(json, int):
+            return Pixels(json)
+
+        elif isinstance(json, dict) and "percent" in json:
+            return Percent(json["percent"])
+
+        else:
+            raise RuntimeError("Number must be an int or percent")
+
+    @classmethod
+    def from_json(cls, json):
+        return Region(
+            cls.parse_int(json["x"]),
+            cls.parse_int(json["y"]),
+            cls.parse_int(json["width"]),
+            cls.parse_int(json["height"]),
+            json.get("strength", 1.0),
+            cls.parse_int(json.get("feather", 0)),
+        )
+
+
 @io.comfytype(io_type="EZ_JSON")
 class JSON(io.ComfyTypeIO):
     Type = list
@@ -214,6 +262,9 @@ class ProcessJson(io.ComfyNode):
                             negative.append(item)
 
                 if len(positive) > 0 or len(negative) > 0:
+                    if region is not None:
+                        region = Region.from_json(region)
+
                     yield (positive, negative, region)
 
 
@@ -374,6 +425,17 @@ class ParseLines(io.ComfyNode):
             raise RuntimeError("Object must have syntax `{ ... }`")
 
 
+    @staticmethod
+    def parse_percent(value):
+        match = re.fullmatch(r' *([\d\.]+)% *', value)
+
+        if match:
+            return { "percent": float(match.group(1)) * 0.01 }
+
+        else:
+            return int(value)
+
+
     @classmethod
     def parse_region(cls, region):
         x = None
@@ -385,17 +447,17 @@ class ParseLines(io.ComfyNode):
 
         for (key, value) in cls.parse_object(region):
             if key == "x":
-                x = float(value)
+                x = cls.parse_percent(value)
             elif key == "y":
-                y = float(value)
+                y = cls.parse_percent(value)
             elif key == "width":
-                width = float(value)
+                width = cls.parse_percent(value)
             elif key == "height":
-                height = float(value)
+                height = cls.parse_percent(value)
             elif key == "strength":
                 strength = float(value)
             elif key == "feather":
-                feather = int(value)
+                feather = cls.parse_percent(value)
             else:
                 raise RuntimeError("Object field must be x, y, width, height, strength, or feather")
 

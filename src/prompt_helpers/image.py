@@ -19,8 +19,8 @@ class Crop:
         return self.bottom - self.top
 
 
-    def pad(self, amount):
-        return Crop(self.left - amount, self.right + amount, self.top - amount, self.bottom + amount)
+    def pad(self, horizontal, vertical):
+        return Crop(self.left - horizontal, self.right + horizontal, self.top - vertical, self.bottom + vertical)
 
 
     def clamp(self, image_width, image_height):
@@ -217,14 +217,14 @@ class ProcessImage:
             ).out(0)
 
 
-    def region_to_crop(self, x, y, width, height):
-        left = x * self.width
-        right = left + (width * self.width)
+    def region_to_crop(self, region):
+        left = region.x.evaluate_int(self.width)
+        right = left + region.width.evaluate_int(self.width)
 
-        top = y * self.height
-        bottom = top + (height * self.height)
+        top = region.y.evaluate_int(self.height)
+        bottom = top + region.height.evaluate_int(self.height)
 
-        return Crop(int(left), int(right), int(top), int(bottom)).clamp_to_parent(self.image_crop())
+        return Crop(left, right, top, bottom).clamp_to_parent(self.image_crop())
 
 
     def image_crop(self):
@@ -253,7 +253,10 @@ class ProcessImage:
             return conditioning
 
         else:
-            crop = crop.pad(feather)
+            x_feather = max(feather.evaluate_int(self.width), 0)
+            y_feather = max(feather.evaluate_int(self.height), 0)
+
+            crop = crop.pad(x_feather, y_feather)
 
             clamped = crop.clamp_to_parent(image_crop)
 
@@ -264,8 +267,8 @@ class ProcessImage:
                 height=crop.height(),
             ).out(0)
 
-            if feather > 0:
-                region = graph.node("FeatherMask", mask=region, left=feather, top=feather, right=feather, bottom=feather).out(0)
+            if x_feather > 0 or y_feather > 0:
+                region = graph.node("FeatherMask", mask=region, left=x_feather, top=y_feather, right=x_feather, bottom=y_feather).out(0)
 
             if clamped != crop:
                 x = clamped.left - crop.left
