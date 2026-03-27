@@ -257,6 +257,21 @@ class ProcessImage:
         ).out(0)
 
 
+    def apply_set_mask(graph, mask, strength, isolated, conditioning):
+        if isolated:
+            cond_area = "mask bounds"
+        else:
+            cond_area = "default"
+
+        return graph.node(
+            "ConditioningSetMask",
+            conditioning=conditioning,
+            mask=mask,
+            strength=strength,
+            set_cond_area=cond_area,
+        ).out(0)
+
+
     def apply_set_area(self, graph, region, cropped_mask, crop, conditioning):
         image_crop = self.image_crop()
 
@@ -311,15 +326,4 @@ class ProcessImage:
                     operation="add",
                 ).out(0)
 
-            if region.isolated:
-                cond_area = "mask bounds"
-            else:
-                cond_area = "default"
-
-            return graph.node(
-                "ConditioningSetMask",
-                conditioning=conditioning,
-                mask=mask,
-                strength=region.strength,
-                set_cond_area=cond_area,
-            ).out(0)
+            return ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, conditioning)

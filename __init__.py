@@ -9,31 +9,42 @@ class PromptHelpers(ComfyExtension):
 
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
-            ez.EZBatch,
+            # controlnet
+            ez.EZControlNet,
+            ez.ConcatenateControlNet,
+            ez.EmptyControlNet,
+
+            # image
             ez.EZBlank,
             ez.EZImage,
             ez.EZUpscaleTiled,
-            ez.EZDetail,
+            ez.EZBatch,
             ez.EZCrop,
-            ez.EZPrompt,
-            ez.EZSampler,
-            ez.EZFilename,
-            ez.EZGenerate,
-            ez.EZGenerateSave,
-            ez.EZCheckpoint,
-            ez.ConcatenateControlNet,
-            ez.EmptyControlNet,
-            ez.EZControlNet,
-            ez.EZNotify,
+            ez.EZDetail,
 
-            prompt.ProcessJson,
+            # prompt
+            ez.EZPrompt,
+            ez.EZMaskRegions,
+            prompt.PromptToggle,
             prompt.ParseLines,
             prompt.ParseYAML,
             prompt.ConcatenateJson,
-            prompt.PromptToggle,
-            prompt.ApplyLoras,
             prompt.DebugJSON,
             prompt.DebugJSONPrompt,
+
+            # sampler
+            ez.EZSampler,
+
+            # default
+            ez.EZCheckpoint,
+            ez.EZFilename,
+            ez.EZGenerate,
+            ez.EZGenerateSave,
+            ez.EZNotify,
+
+            # hidden
+            prompt.ProcessJson,
+            prompt.ApplyLoras,
         ]
 
 async def comfy_entrypoint() -> PromptHelpers:

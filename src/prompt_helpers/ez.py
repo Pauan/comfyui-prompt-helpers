@@ -249,7 +249,7 @@ class EZPrompt(io.ComfyNode):
         return io.Schema(
             node_id="prompt_helpers: EZPrompt",
             display_name="EZ Prompt",
-            category="prompt_helpers",
+            category="prompt_helpers/prompt",
             description="Guides the image generation with a JSON prompt.",
             inputs=[
                 JSON.Input("json", tooltip="The conditioning describing the attributes of the image."),
@@ -265,7 +265,46 @@ class EZPrompt(io.ComfyNode):
         return io.NodeOutput({
             "json": json,
             "weight": weight,
+            "masks": {},
         })
+
+
+class EZMaskRegions(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: EZMaskRegions",
+            display_name="EZ Mask Regions",
+            category="prompt_helpers/prompt",
+            description="Sets masks which can be used as a mask region in the JSON prompt.",
+            inputs=[
+                io.Custom("EZ_PROMPT_SETTINGS").Input("prompt"),
+                io.Mask.Input("masks", tooltip="List of masks."),
+                io.String.Input("names", tooltip="Names of the masks, in the same order as the masks."),
+            ],
+            outputs=[
+                io.Custom("EZ_PROMPT_SETTINGS").Output(display_name="PROMPT", is_output_list=True),
+            ],
+            is_input_list=True,
+        )
+
+    @classmethod
+    def execute(cls, prompt, masks, names) -> io.NodeOutput:
+        outputs = []
+
+        for prompt in prompt:
+            prompt = prompt.copy()
+
+            mappings = prompt["masks"].copy()
+
+            for (name, mask) in zip(names, masks):
+                mappings[name] = mask
+
+            prompt["masks"] = mappings
+
+            outputs.append(prompt)
+
+        return io.NodeOutput(outputs)
 
 
 class EZControlNet(io.ComfyNode):
@@ -349,7 +388,7 @@ class EZSampler(io.ComfyNode):
         return io.Schema(
             node_id="prompt_helpers: EZSampler",
             display_name="EZ Sampler",
-            category="prompt_helpers",
+            category="prompt_helpers/sampler",
             description="Settings for how the image generation should happen.",
             inputs=[
                 io.Combo.Input("sampler_name", options=sorted(comfy.samplers.KSampler.SAMPLERS), default="euler", tooltip="The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."),
@@ -467,54 +506,86 @@ class EZGenerate(io.ComfyNode):
         return (positive, negative)
 
 
+    # @TODO make control nets work properly with isolated regions
     @classmethod
-    def convert_prompt(cls, graph, clip, vae, json, process, control_net):
+    def convert_prompt(cls, graph, clip, vae, json, mask_regions, process, control_net):
         global_positive = []
         global_negative = []
 
         region_chunks = []
+        mask_chunks = []
 
-        for (positive, negative, region) in ProcessJson.iter_chunks(json):
+        for (positive, negative, region, mask_region) in ProcessJson.iter_chunks(json):
+            is_global = True
+
+            if mask_region is not None:
+                is_global = False
+
             crop = None
 
             if region is not None:
+                is_global = False
+
+                # If the region is outside of the crop region then `crop` will be None, so it will be skipped
                 crop = process.region_to_crop(region)
 
-                # Skip regions which are outside of the crop region
-                if crop is None:
-                    continue
 
-            positive = ProcessJson.serialize_prompts(positive)
-            negative = ProcessJson.serialize_prompts(negative)
-
-            if positive is not None:
-                positive = graph.node("CLIPTextEncode", text=positive, clip=clip).out(0)
-
-            if negative is not None:
-                negative = graph.node("CLIPTextEncode", text=negative, clip=clip).out(0)
-
-            if crop is None:
-                if positive is not None:
-                    global_positive.append(positive)
-
-                if negative is not None:
-                    global_negative.append(negative)
-
-            else:
-                chunk = {
-                    "positive": [],
-                    "negative": [],
-                    "crop": crop,
-                    "region": region,
-                }
+            if is_global or mask_region is not None or crop is not None:
+                positive = ProcessJson.serialize_prompts(positive)
+                negative = ProcessJson.serialize_prompts(negative)
 
                 if positive is not None:
-                    chunk["positive"].append(positive)
+                    positive = graph.node("CLIPTextEncode", text=positive, clip=clip).out(0)
 
                 if negative is not None:
-                    chunk["negative"].append(negative)
+                    negative = graph.node("CLIPTextEncode", text=negative, clip=clip).out(0)
 
-                region_chunks.append(chunk)
+
+                if is_global:
+                    if positive is not None:
+                        global_positive.append(positive)
+
+                    if negative is not None:
+                        global_negative.append(negative)
+
+
+                if mask_region is not None:
+                    mask = mask_regions.get(mask_region.name, None)
+
+                    if mask is None:
+                        raise RuntimeError("Mask region \"{}\" not found.".format(mask_region.name))
+
+                    chunk = {
+                        "positive": [],
+                        "negative": [],
+                        "mask": mask,
+                        "region": mask_region,
+                    }
+
+                    if positive is not None:
+                        chunk["positive"].append(positive)
+
+                    if negative is not None:
+                        chunk["negative"].append(negative)
+
+                    mask_chunks.append(chunk)
+
+
+                if crop is not None:
+                    chunk = {
+                        "positive": [],
+                        "negative": [],
+                        "crop": crop,
+                        "region": region,
+                    }
+
+                    if positive is not None:
+                        chunk["positive"].append(positive)
+
+                    if negative is not None:
+                        chunk["negative"].append(negative)
+
+                    region_chunks.append(chunk)
 
 
         (positive, negative) = cls.encode_prompts(graph, clip, global_positive, global_negative)
@@ -537,6 +608,24 @@ class EZGenerate(io.ComfyNode):
 
             positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
             negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
+
+            final_positive.append(positive)
+            final_negative.append(negative)
+
+
+        for chunk in mask_chunks:
+            region = chunk["region"]
+            mask = chunk["mask"]
+
+            # Concats the global prompt with the region prompt
+            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
+            chunk["positive"].extend(global_positive)
+            chunk["negative"].extend(global_negative)
+
+            (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
+
+            positive = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, positive)
+            negative = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, negative)
 
             final_positive.append(positive)
             final_negative.append(negative)
@@ -567,12 +656,12 @@ class EZGenerate(io.ComfyNode):
 
 
     @classmethod
-    def process_json(cls, graph, model, clip, vae, json, process, control_net=None):
+    def process_json(cls, graph, model, clip, vae, json, mask_regions, process, control_net=None):
         process_json = ProcessJson.process_json(json)
 
         (model, clip) = cls.apply_loras(graph, model, clip, process_json)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, vae, process_json, process, control_net)
+        (positive, negative) = cls.convert_prompt(graph, clip, vae, process_json, mask_regions, process, control_net)
 
         return (model, clip, positive, negative)
 
@@ -690,7 +779,7 @@ class EZGenerate(io.ComfyNode):
             image["select_index"],
         )
 
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], process, control_net)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], prompt["masks"], process, control_net)
 
         empty_image = process.empty_latent(graph)
 
@@ -742,7 +831,7 @@ class EZGenerate(io.ComfyNode):
             image["select_index"],
         )
 
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], process, control_net)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], prompt["masks"], process, control_net)
 
         cropped_mask = process.crop_mask(graph, original_mask)
 
@@ -818,7 +907,7 @@ class EZGenerate(io.ComfyNode):
 
         graph = GraphBuilder()
 
-        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], control_net)
+        (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], prompt["masks"], control_net)
 
         #model = kwargs["model"]
         #clip = kwargs["clip"]

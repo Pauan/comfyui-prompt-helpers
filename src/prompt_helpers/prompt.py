@@ -62,7 +62,22 @@ class Region:
             cls.parse_int(json["height"]),
             json.get("strength", 1.0),
             cls.parse_int(json.get("feather", 0)),
-            json.get("isolated", True),
+            json.get("isolated", False),
+        )
+
+
+class MaskRegion:
+    def __init__(self, name, strength, isolated):
+        self.name = name
+        self.strength = strength
+        self.isolated = isolated
+
+    @classmethod
+    def from_json(cls, json):
+        return MaskRegion(
+            json["name"],
+            json.get("strength", 1.0),
+            json.get("isolated", False),
         )
 
 
@@ -82,9 +97,10 @@ class JSON(io.ComfyTypeIO):
 
 
 class Chunk:
-    def __init__(self, region):
+    def __init__(self, region, mask_region):
         self.prompts = []
         self.region = region
+        self.mask_region = mask_region
         self.pushed = False
 
 
@@ -134,7 +150,7 @@ class ProcessState:
         if not chunk.pushed:
             assert len(chunk.prompts) > 0
             chunk.pushed = True
-            self.chunks.append({ "chunk": chunk.prompts, "region": chunk.region })
+            self.chunks.append({ "chunk": chunk.prompts, "region": chunk.region, "mask-region": chunk.mask_region })
 
 
     def process_bundle(self, seen_bundles, outer_weight, item, name, chunk):
@@ -186,7 +202,7 @@ class ProcessState:
                     self.push_chunk(chunk)
 
             elif "bundle" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(None))
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(None, None))
 
             elif "bundle-inline" in item:
                 self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk)
@@ -218,7 +234,7 @@ class ProcessState:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                self.process_children(frozenset(), 1.0, item["chunk"], Chunk(item.get("region", None)))
+                self.process_children(frozenset(), 1.0, item["chunk"], Chunk(item.get("region", None), item.get("mask-region", None)))
 
             else:
                 raise RuntimeError("Root must be either bundles or chunk.")
@@ -256,6 +272,7 @@ class ProcessJson(io.ComfyNode):
         for item in json:
             if "chunk" in item:
                 region = item.get("region", None)
+                mask_region = item.get("mask-region", None)
                 positive = []
                 negative = []
 
@@ -273,7 +290,10 @@ class ProcessJson(io.ComfyNode):
                     if region is not None:
                         region = Region.from_json(region)
 
-                    yield (positive, negative, region)
+                    if mask_region is not None:
+                        mask_region = MaskRegion.from_json(mask_region)
+
+                    yield (positive, negative, region, mask_region)
 
 
     """
@@ -287,6 +307,7 @@ class ProcessJson(io.ComfyNode):
             if "chunk" in item:
                 prompts = []
                 region = item.get("region", None)
+                mask_region = item.get("mask-region", None)
 
                 for item in item["chunk"]:
                     if "prompt" in item:
@@ -297,6 +318,7 @@ class ProcessJson(io.ComfyNode):
                     chunks.append({
                         "chunk": prompts,
                         "region": region,
+                        "mask-region": mask_region,
                     })
 
         return chunks
@@ -313,6 +335,7 @@ class ProcessJson(io.ComfyNode):
             if "chunk" in item:
                 prompts = []
                 region = item.get("region", None)
+                mask_region = item.get("mask-region", None)
 
                 for item in item["chunk"]:
                     if "prompt" in item:
@@ -325,6 +348,7 @@ class ProcessJson(io.ComfyNode):
                     chunks.append({
                         "chunk": prompts,
                         "region": region,
+                        "mask-region": mask_region,
                     })
 
         return chunks
@@ -433,6 +457,12 @@ class ParseLines(io.ComfyNode):
             raise RuntimeError("Object must have syntax `{ ... }`")
 
 
+    @classmethod
+    def parse_optional_object(cls, object):
+        if re.fullmatch(r' *', object) is None:
+            yield from cls.parse_object(object)
+
+
     @staticmethod
     def parse_percent(value):
         match = re.fullmatch(r' *([\d\.]+)% *', value)
@@ -466,26 +496,25 @@ class ParseLines(io.ComfyNode):
         height = { "percent": 1.0 }
         strength = 1.0
         feather = 0
-        isolated = True
+        isolated = False
 
-        if re.fullmatch(r' *', region) is None:
-            for (key, value) in cls.parse_object(region):
-                if key == "x":
-                    x = cls.parse_percent(value)
-                elif key == "y":
-                    y = cls.parse_percent(value)
-                elif key == "width":
-                    width = cls.parse_percent(value)
-                elif key == "height":
-                    height = cls.parse_percent(value)
-                elif key == "strength":
-                    strength = float(value)
-                elif key == "feather":
-                    feather = cls.parse_percent(value)
-                elif key == "isolated":
-                    isolated = cls.parse_bool(value)
-                else:
-                    raise RuntimeError("Object field must be x, y, width, height, strength, feather, or isolated")
+        for (key, value) in cls.parse_optional_object(region):
+            if key == "x":
+                x = cls.parse_percent(value)
+            elif key == "y":
+                y = cls.parse_percent(value)
+            elif key == "width":
+                width = cls.parse_percent(value)
+            elif key == "height":
+                height = cls.parse_percent(value)
+            elif key == "strength":
+                strength = float(value)
+            elif key == "feather":
+                feather = cls.parse_percent(value)
+            elif key == "isolated":
+                isolated = cls.parse_bool(value)
+            else:
+                raise RuntimeError("Object field must be x, y, width, height, strength, feather, or isolated")
 
         return {
             "x": x,
@@ -499,6 +528,36 @@ class ParseLines(io.ComfyNode):
 
 
     @classmethod
+    def parse_mask_region(cls, region):
+        match = re.fullmatch(r'([^\{\}]*)(.*)', region)
+
+        if match:
+            name = match.group(1).strip()
+            strength = 1.0
+            isolated = False
+
+            if name == "":
+                raise RuntimeError("MASK-REGION must have a name")
+
+            for (key, value) in cls.parse_optional_object(match.group(2)):
+                if key == "strength":
+                    strength = float(value)
+                elif key == "isolated":
+                    isolated = cls.parse_bool(value)
+                else:
+                    raise RuntimeError("Object field must be strength or isolated")
+
+            return {
+                "name": name,
+                "strength": strength,
+                "isolated": isolated,
+            }
+
+        else:
+            raise RuntimeError("Invalid syntax for MASK-REGION")
+
+
+    @classmethod
     def parse_lines(cls, text, root, seen):
         output = []
 
@@ -508,10 +567,11 @@ class ParseLines(io.ComfyNode):
         bundles = []
         prompts = []
         region = None
+        mask_region = None
 
 
         def process_break(reset_bundles):
-            nonlocal bundles, prompts, region
+            nonlocal bundles, prompts, region, mask_region
 
             if len(bundles) > 0:
                 bundles[-1]["children"].extend(prompts)
@@ -521,10 +581,11 @@ class ParseLines(io.ComfyNode):
                     bundles = []
 
             elif len(prompts) > 0:
-                output.append({ "chunk": prompts, "region": region })
+                output.append({ "chunk": prompts, "region": region, "mask-region": mask_region })
 
             prompts = []
             region = None
+            mask_region = None
 
 
         def process_function(prompt, weight):
@@ -563,7 +624,7 @@ class ParseLines(io.ComfyNode):
 
 
         def process_line(line):
-            nonlocal region
+            nonlocal region, mask_region
 
             if re.fullmatch(r'(?:BREAK|\-{3,})', line):
                 process_break(True)
@@ -600,6 +661,14 @@ class ParseLines(io.ComfyNode):
                 return
 
 
+            match = re.fullmatch(r'MASK-REGION: *(.*)', line)
+
+            if match:
+                process_break(True)
+                mask_region = cls.parse_mask_region(match.group(1))
+                return
+
+
             if re.search(r'BREAK', line) is not None:
                 raise RuntimeError("Invalid BREAK found in text:\n\n" + text)
 
@@ -614,6 +683,9 @@ class ParseLines(io.ComfyNode):
 
             if re.search(r'REGION:', line) is not None:
                 raise RuntimeError("Invalid REGION: found in text:\n\n" + text)
+
+            if re.search(r'MASK-REGION:', line) is not None:
+                raise RuntimeError("Invalid MASK-REGION: found in text:\n\n" + text)
 
             # Search for a weight for the line
             match = re.fullmatch(r'(.*)\* *([\-\d\.]+)', line)
