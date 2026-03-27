@@ -477,6 +477,7 @@ class EZGenerate(io.ComfyNode):
         for (positive, negative, region) in ProcessJson.iter_chunks(json):
             crop = None
             strength = None
+            feather = None
 
             if region is not None:
                 crop = process.region_to_crop(region["x"], region["y"], region["width"], region["height"])
@@ -484,6 +485,7 @@ class EZGenerate(io.ComfyNode):
                 # Skip regions which are outside of the crop region
                 if crop.width() > 0 and crop.height() > 0:
                     strength = region.get("strength", 1.0)
+                    feather = region.get("feather", 0)
                 else:
                     continue
 
@@ -509,6 +511,7 @@ class EZGenerate(io.ComfyNode):
                     "negative": [],
                     "crop": crop,
                     "strength": strength,
+                    "feather": feather,
                 }
 
                 if positive is not None:
@@ -536,8 +539,8 @@ class EZGenerate(io.ComfyNode):
 
             (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
 
-            positive = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], positive)
-            negative = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], negative)
+            positive = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], chunk["feather"], positive)
+            negative = process.apply_set_area(graph, cropped_mask, chunk["crop"], chunk["strength"], chunk["feather"], negative)
 
             final_positive.append(positive)
             final_negative.append(negative)

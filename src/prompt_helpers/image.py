@@ -8,12 +8,19 @@ class Crop:
         self.top = top
         self.bottom = bottom
 
+    def __eq__(self, other):
+        return self.left == other.left and self.right == other.right and self.top == other.top and self.bottom == other.bottom
+
 
     def width(self):
         return self.right - self.left
 
     def height(self):
         return self.bottom - self.top
+
+
+    def pad(self, amount):
+        return Crop(self.left - amount, self.right + amount, self.top - amount, self.bottom + amount)
 
 
     def clamp(self, image_width, image_height):
@@ -197,20 +204,15 @@ class ProcessImage:
             return downscaled_image
 
         else:
-            x = 0
-            y = 0
-
-            if self.crop:
-                x = self.crop.left
-                y = self.crop.top
+            image_crop = self.image_crop()
 
             return graph.node(
                 "ImageCompositeMasked",
                 destination=self.repeat_image(graph, original_image),
                 source=downscaled_image,
                 mask=cropped_mask,
-                x=x,
-                y=y,
+                x=image_crop.left,
+                y=image_crop.top,
                 resize_source=False,
             ).out(0)
 
@@ -222,58 +224,79 @@ class ProcessImage:
         top = y * self.height
         bottom = top + (height * self.height)
 
-        region = Crop(int(left), int(right), int(top), int(bottom)).clamp(self.width, self.height)
+        return Crop(int(left), int(right), int(top), int(bottom)).clamp_to_parent(self.image_crop())
 
+
+    def image_crop(self):
         if self.crop:
-            region = region.clamp_to_parent(self.crop)
-
-        return region
+            return self.crop
+        else:
+            return Crop(0, self.width, 0, self.height)
 
 
     def cropped_mask(self, graph):
-        width = self.width
-        height = self.height
-
-        if self.crop:
-            width = self.crop.width()
-            height = self.crop.height()
+        image_crop = self.image_crop()
 
         return graph.node(
             "SolidMask",
             value=0.0,
-            width=width,
-            height=height,
+            width=image_crop.width(),
+            height=image_crop.height(),
         ).out(0)
 
 
-    def apply_set_area(self, graph, cropped_mask, crop, strength, conditioning):
-        x = 0
-        y = 0
+    def apply_set_area(self, graph, cropped_mask, crop, strength, feather, conditioning):
+        image_crop = self.image_crop()
 
-        if self.crop:
-            x = self.crop.left
-            y = self.crop.top
+        # Region occupies the entire image, no need for masking
+        if crop == image_crop and strength == 1.0:
+            return conditioning
 
-        region = graph.node(
-            "SolidMask",
-            value=1.0,
-            width=crop.width(),
-            height=crop.height(),
-        ).out(0)
+        else:
+            crop = crop.pad(feather)
 
-        mask = graph.node(
-            "MaskComposite",
-            destination=cropped_mask,
-            source=region,
-            x=crop.left - x,
-            y=crop.top - y,
-            operation="add",
-        ).out(0)
+            clamped = crop.clamp_to_parent(image_crop)
 
-        return graph.node(
-            "ConditioningSetMask",
-            conditioning=conditioning,
-            mask=mask,
-            strength=strength,
-            set_cond_area="default",
-        ).out(0)
+            region = graph.node(
+                "SolidMask",
+                value=1.0,
+                width=crop.width(),
+                height=crop.height(),
+            ).out(0)
+
+            if feather > 0:
+                region = graph.node("FeatherMask", mask=region, left=feather, top=feather, right=feather, bottom=feather).out(0)
+
+            if clamped != crop:
+                x = clamped.left - crop.left
+                y = clamped.top - crop.top
+
+                assert x >= 0
+                assert y >= 0
+
+                region = graph.node(
+                    "CropMask",
+                    mask=region,
+                    x=x,
+                    y=y,
+                    width=clamped.width(),
+                    height=clamped.height(),
+                ).out(0)
+
+            if clamped != image_crop:
+                region = graph.node(
+                    "MaskComposite",
+                    destination=cropped_mask,
+                    source=region,
+                    x=clamped.left - image_crop.left,
+                    y=clamped.top - image_crop.top,
+                    operation="add",
+                ).out(0)
+
+            return graph.node(
+                "ConditioningSetMask",
+                conditioning=conditioning,
+                mask=region,
+                strength=strength,
+                set_cond_area="default",
+            ).out(0)

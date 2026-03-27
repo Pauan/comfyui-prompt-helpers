@@ -353,63 +353,72 @@ class ParseLines(io.ComfyNode):
 
 
     @staticmethod
-    def parse_region(region):
-        match = re.fullmatch(r' *\{([^\}]*)\} *', region)
+    def parse_object(object):
+        match = re.fullmatch(r' *\{([^\}]*)\} *', object)
 
         if match:
             fields = re.split(r', *', match.group(1))
 
-            x = None
-            y = None
-            width = None
-            height = None
-            strength = 1.0
-
             for field in fields:
-                match = re.fullmatch(r' *([a-z]+) *: *([^ ]+) *', field)
+                match = re.fullmatch(r' *([\_a-zA-Z0-9]+) *: *(.+)', field)
 
                 if match:
                     name = match.group(1)
                     value = match.group(2)
-
-                    if name == "x":
-                        x = float(value)
-                    elif name == "y":
-                        y = float(value)
-                    elif name == "width":
-                        width = float(value)
-                    elif name == "height":
-                        height = float(value)
-                    elif name == "strength":
-                        strength = float(value)
-                    else:
-                        raise RuntimeError("Region field must be x, y, width, height, or strength")
+                    yield (name, value)
 
                 else:
-                    raise RuntimeError("Region field must have syntax `name: value`")
-
-            if x is None:
-                raise RuntimeError("Region is missing x")
-
-            if y is None:
-                raise RuntimeError("Region is missing y")
-
-            if width is None:
-                raise RuntimeError("Region is missing width")
-
-            if height is None:
-                raise RuntimeError("Region is missing height")
-
-            return {
-                "x": x,
-                "y": y,
-                "width": width,
-                "height": height,
-                "strength": strength,
-            }
+                    raise RuntimeError("Object field must have syntax `name: value`")
 
         else:
-            raise RuntimeError("Region must have syntax `{ ... }`")
+            raise RuntimeError("Object must have syntax `{ ... }`")
+
+
+    @classmethod
+    def parse_region(cls, region):
+        x = None
+        y = None
+        width = None
+        height = None
+        strength = 1.0
+        feather = 0
+
+        for (key, value) in cls.parse_object(region):
+            if key == "x":
+                x = float(value)
+            elif key == "y":
+                y = float(value)
+            elif key == "width":
+                width = float(value)
+            elif key == "height":
+                height = float(value)
+            elif key == "strength":
+                strength = float(value)
+            elif key == "feather":
+                feather = int(value)
+            else:
+                raise RuntimeError("Object field must be x, y, width, height, strength, or feather")
+
+        if x is None:
+            raise RuntimeError("Object is missing x")
+
+        if y is None:
+            raise RuntimeError("Object is missing y")
+
+        if width is None:
+            raise RuntimeError("Object is missing width")
+
+        if height is None:
+            raise RuntimeError("Object is missing height")
+
+        return {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "strength": strength,
+            "feather": feather,
+        }
 
 
     @classmethod
