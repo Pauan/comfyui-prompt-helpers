@@ -512,7 +512,6 @@ class EZGenerate(io.ComfyNode):
         return fold(chunks, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
 
 
-    # @TODO make control nets work properly with isolated regions
     @classmethod
     def convert_prompt(cls, graph, clip, vae, json, mask_regions, process, control_net):
         global_positive = []
@@ -617,14 +616,22 @@ class EZGenerate(io.ComfyNode):
 
             (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
 
-            positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
-            negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
-
             if region.isolated:
+                crop = chunk["crop"].clamp_to_parent(process.image_crop())
+
+                # Crop the controlnet to the region
+                (positive, negative) = cls.apply_controlnet(graph, vae, process.with_crop(crop), control_net, positive, negative)
+
+                positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
+                negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
+
                 isolated_positive.append(positive)
                 isolated_negative.append(negative)
 
             else:
+                positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
+                negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
+
                 control_positive.append(positive)
                 control_negative.append(negative)
 
@@ -643,6 +650,7 @@ class EZGenerate(io.ComfyNode):
             positive = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, positive)
             negative = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, negative)
 
+            # @TODO make control nets work properly with isolated regions
             if region.isolated:
                 isolated_positive.append(positive)
                 isolated_negative.append(negative)

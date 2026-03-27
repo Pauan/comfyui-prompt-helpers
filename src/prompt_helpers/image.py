@@ -132,6 +132,10 @@ class ProcessImage:
         self.select_index = select_index
 
 
+    def with_crop(self, crop):
+        return ProcessImage(crop, self.detail, self.width, self.height, self.batch_size, self.select_index)
+
+
     def image_crop(self):
         if self.crop:
             return self.crop
