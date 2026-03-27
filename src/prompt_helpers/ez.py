@@ -506,6 +506,12 @@ class EZGenerate(io.ComfyNode):
         return (positive, negative)
 
 
+    @staticmethod
+    def combine_conditions(graph, chunks):
+        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
+        return fold(chunks, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+
+
     # @TODO make control nets work properly with isolated regions
     @classmethod
     def convert_prompt(cls, graph, clip, vae, json, mask_regions, process, control_net):
@@ -590,8 +596,13 @@ class EZGenerate(io.ComfyNode):
 
         (positive, negative) = cls.encode_prompts(graph, clip, global_positive, global_negative)
 
-        final_positive = [positive]
-        final_negative = [negative]
+        # Chunks that have control net applied
+        control_positive = [positive]
+        control_negative = [negative]
+
+        # Chunks that do not have control net applied
+        isolated_positive = []
+        isolated_negative = []
 
 
         cropped_mask = process.cropped_mask(graph)
@@ -609,8 +620,13 @@ class EZGenerate(io.ComfyNode):
             positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
             negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
 
-            final_positive.append(positive)
-            final_negative.append(negative)
+            if region.isolated:
+                isolated_positive.append(positive)
+                isolated_negative.append(negative)
+
+            else:
+                control_positive.append(positive)
+                control_negative.append(negative)
 
 
         for chunk in mask_chunks:
@@ -627,18 +643,33 @@ class EZGenerate(io.ComfyNode):
             positive = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, positive)
             negative = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, negative)
 
-            final_positive.append(positive)
-            final_negative.append(negative)
+            if region.isolated:
+                isolated_positive.append(positive)
+                isolated_negative.append(negative)
+
+            else:
+                control_positive.append(positive)
+                control_negative.append(negative)
 
 
-        assert len(final_positive) > 0
-        assert len(final_negative) > 0
+        control_positive = cls.combine_conditions(graph, control_positive)
+        control_negative = cls.combine_conditions(graph, control_negative)
 
-        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
-        final_positive = fold(final_positive, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
-        final_negative = fold(final_negative, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+        assert control_positive is not None
+        assert control_negative is not None
 
-        (final_positive, final_negative) = cls.apply_controlnet(graph, vae, process, control_net, final_positive, final_negative)
+        (final_positive, final_negative) = cls.apply_controlnet(graph, vae, process, control_net, control_positive, control_negative)
+
+
+        isolated_positive = cls.combine_conditions(graph, isolated_positive)
+        isolated_negative = cls.combine_conditions(graph, isolated_negative)
+
+        if isolated_positive is not None:
+            final_positive = cls.combine_conditions(graph, [final_positive, isolated_positive])
+
+        if isolated_negative is not None:
+            final_negative = cls.combine_conditions(graph, [final_negative, isolated_negative])
+
 
         return (final_positive, final_negative)
 
