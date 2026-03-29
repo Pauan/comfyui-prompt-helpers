@@ -492,24 +492,38 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def encode_prompts(graph, clip, positive, negative):
+    def concat_conditions(graph, chunks):
         # Combines the chunks together with ConditioningConcat
-        positive = fold(positive, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
-        negative = fold(negative, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
+        output = fold(chunks, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
 
-        if positive is None:
-            positive = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
-
-        if negative is None:
-            negative = graph.node("CLIPTextEncode", text="", clip=clip).out(0)
-
-        return (positive, negative)
+        if output is None:
+            return []
+        else:
+            return [output]
 
 
     @staticmethod
     def combine_conditions(graph, chunks):
         # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
-        return fold(chunks, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+        output = fold(chunks, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+
+        if output is None:
+            return []
+        else:
+            return [output]
+
+
+    @staticmethod
+    def default_condition(graph, clip, chunks):
+        l = len(chunks)
+
+        assert l < 2
+
+        if l == 0:
+            return graph.node("CLIPTextEncode", text="", clip=clip).out(0)
+
+        else:
+            return chunks[0]
 
 
     @classmethod
@@ -536,22 +550,25 @@ class EZGenerate(io.ComfyNode):
 
 
             if is_global or mask_region is not None or crop is not None:
-                positive = ProcessJson.serialize_prompts(positive)
-                negative = ProcessJson.serialize_prompts(negative)
+                positive_chunks = []
+                negative_chunks = []
 
-                if positive is not None:
-                    positive = graph.node("CLIPTextEncode", text=positive, clip=clip).out(0)
+                for prompts in positive:
+                    text = ProcessJson.serialize_prompts(prompts)
 
-                if negative is not None:
-                    negative = graph.node("CLIPTextEncode", text=negative, clip=clip).out(0)
+                    if text is not None:
+                        positive_chunks.append(graph.node("CLIPTextEncode", text=text, clip=clip).out(0))
+
+                for prompts in negative:
+                    text = ProcessJson.serialize_prompts(prompts)
+
+                    if text is not None:
+                        negative_chunks.append(graph.node("CLIPTextEncode", text=text, clip=clip).out(0))
 
 
                 if is_global:
-                    if positive is not None:
-                        global_positive.append(positive)
-
-                    if negative is not None:
-                        global_negative.append(negative)
+                    global_positive.extend(positive_chunks)
+                    global_negative.extend(negative_chunks)
 
 
                 if mask_region is not None:
@@ -567,11 +584,8 @@ class EZGenerate(io.ComfyNode):
                         "region": mask_region,
                     }
 
-                    if positive is not None:
-                        chunk["positive"].append(positive)
-
-                    if negative is not None:
-                        chunk["negative"].append(negative)
+                    chunk["positive"].extend(positive_chunks)
+                    chunk["negative"].extend(negative_chunks)
 
                     mask_chunks.append(chunk)
 
@@ -584,24 +598,26 @@ class EZGenerate(io.ComfyNode):
                         "region": region,
                     }
 
-                    if positive is not None:
-                        chunk["positive"].append(positive)
-
-                    if negative is not None:
-                        chunk["negative"].append(negative)
+                    chunk["positive"].extend(positive_chunks)
+                    chunk["negative"].extend(negative_chunks)
 
                     region_chunks.append(chunk)
 
 
-        (positive, negative) = cls.encode_prompts(graph, clip, global_positive, global_negative)
-
         # Chunks that have control net applied
-        control_positive = [positive]
-        control_negative = [negative]
+        control_positive = []
+        control_negative = []
 
         # Chunks that do not have control net applied
         isolated_positive = []
         isolated_negative = []
+
+
+        global_positive = cls.concat_conditions(graph, global_positive)
+        global_negative = cls.concat_conditions(graph, global_negative)
+
+        control_positive.extend(global_positive)
+        control_negative.extend(global_negative)
 
 
         cropped_mask = process.cropped_mask(graph)
@@ -614,7 +630,8 @@ class EZGenerate(io.ComfyNode):
             chunk["positive"].extend(global_positive)
             chunk["negative"].extend(global_negative)
 
-            (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
+            positive = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["positive"]))
+            negative = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["negative"]))
 
             if region.isolated:
                 crop = chunk["crop"].clamp_to_parent(process.image_crop())
@@ -645,7 +662,8 @@ class EZGenerate(io.ComfyNode):
             chunk["positive"].extend(global_positive)
             chunk["negative"].extend(global_negative)
 
-            (positive, negative) = cls.encode_prompts(graph, clip, chunk["positive"], chunk["negative"])
+            positive = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["positive"]))
+            negative = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["negative"]))
 
             positive = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, positive)
             negative = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, negative)
@@ -660,11 +678,8 @@ class EZGenerate(io.ComfyNode):
                 control_negative.append(negative)
 
 
-        control_positive = cls.combine_conditions(graph, control_positive)
-        control_negative = cls.combine_conditions(graph, control_negative)
-
-        assert control_positive is not None
-        assert control_negative is not None
+        control_positive = cls.default_condition(graph, clip, cls.combine_conditions(graph, control_positive))
+        control_negative = cls.default_condition(graph, clip, cls.combine_conditions(graph, control_negative))
 
         (final_positive, final_negative) = cls.apply_controlnet(graph, vae, process, control_net, control_positive, control_negative)
 
@@ -672,11 +687,11 @@ class EZGenerate(io.ComfyNode):
         isolated_positive = cls.combine_conditions(graph, isolated_positive)
         isolated_negative = cls.combine_conditions(graph, isolated_negative)
 
-        if isolated_positive is not None:
-            final_positive = cls.combine_conditions(graph, [final_positive, isolated_positive])
+        if len(isolated_positive) > 0:
+            final_positive = cls.combine_conditions(graph, [final_positive, isolated_positive[0]])
 
-        if isolated_negative is not None:
-            final_negative = cls.combine_conditions(graph, [final_negative, isolated_negative])
+        if len(isolated_negative) > 0:
+            final_negative = cls.combine_conditions(graph, [final_negative, isolated_negative[0]])
 
 
         return (final_positive, final_negative)

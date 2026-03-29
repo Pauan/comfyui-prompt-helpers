@@ -96,14 +96,6 @@ class JSON(io.ComfyTypeIO):
             return super().as_dict()
 
 
-class Chunk:
-    def __init__(self, region, mask_region):
-        self.prompts = []
-        self.region = region
-        self.mask_region = mask_region
-        self.pushed = False
-
-
 class ProcessState:
     def __init__(self):
         self.seen_prompts = set()
@@ -146,14 +138,7 @@ class ProcessState:
         return prompt
 
 
-    def push_chunk(self, chunk):
-        if not chunk.pushed:
-            assert len(chunk.prompts) > 0
-            chunk.pushed = True
-            self.chunks.append({ "chunk": chunk.prompts, "region": chunk.region, "mask-region": chunk.mask_region })
-
-
-    def process_bundle(self, seen_bundles, outer_weight, item, name, chunk):
+    def process_bundle(self, seen_bundles, outer_weight, item, name, chunk, prompts):
         if item.get("enabled", True):
             if not name in self.bundles:
                 raise RuntimeError("Bundle {} not found.".format(name))
@@ -168,44 +153,45 @@ class ProcessState:
                 outer_weight * item.get("weight", 1.0),
                 bundle["children"],
                 chunk,
+                prompts,
             )
 
 
-    def process_children(self, seen_bundles, outer_weight, children, chunk):
+    def process_children(self, seen_bundles, outer_weight, children, chunk, prompts):
         for item in children:
             if "prompt" in item:
                 if item.get("enabled", True):
                     prompt = ProcessState.cleanup_prompt(item["prompt"])
 
                     if prompt != "":
-                        key = (id(chunk.region), prompt)
+                        key = (id(chunk["region"]), id(chunk["mask-region"]), prompt)
 
                         if key in self.seen_prompts:
                             raise RuntimeError("Duplicate prompt: {}".format(prompt))
                         else:
                             self.seen_prompts.add(key)
 
-                        chunk.prompts.append({
+                        prompts.append({
                             "prompt": prompt,
                             "weight": round(outer_weight * item.get("weight", 1.0), 2),
                         })
 
-                        self.push_chunk(chunk)
-
             elif "lora" in item:
                 if item.get("enabled", True):
-                    chunk.prompts.append({
+                    prompts.append({
                         "lora": item["lora"],
                         "weight": round(outer_weight * item.get("weight", 1.0), 2),
                     })
 
-                    self.push_chunk(chunk)
-
             elif "bundle" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(chunk.region, chunk.mask_region))
+                sub_prompts = []
+
+                chunk["chunks"].append(sub_prompts)
+
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], chunk, sub_prompts)
 
             elif "bundle-inline" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk)
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk, prompts)
 
             else:
                 raise RuntimeError("Unknown type.")
@@ -234,7 +220,17 @@ class ProcessState:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                self.process_children(frozenset(), 1.0, item["chunk"], Chunk(item.get("region", None), item.get("mask-region", None)))
+                prompts = []
+
+                chunk = {
+                    "chunks": [prompts],
+                    "region": item.get("region", None),
+                    "mask-region": item.get("mask-region", None),
+                }
+
+                self.chunks.append(chunk)
+
+                self.process_children(frozenset(), 1.0, item["chunk"], chunk, prompts)
 
             else:
                 raise RuntimeError("Root must be either bundles or chunk.")
@@ -269,14 +265,17 @@ class ProcessJson(io.ComfyNode):
 
     @staticmethod
     def iter_chunks(json):
-        for item in json:
-            if "chunk" in item:
-                region = item.get("region", None)
-                mask_region = item.get("mask-region", None)
+        for chunk in json:
+            region = chunk.get("region", None)
+            mask_region = chunk.get("mask-region", None)
+            positive_chunks = []
+            negative_chunks = []
+
+            for prompts in chunk["chunks"]:
                 positive = []
                 negative = []
 
-                for item in item["chunk"]:
+                for item in prompts:
                     if "prompt" in item:
                         if item["weight"] > 0.0:
                             positive.append(item)
@@ -286,14 +285,20 @@ class ProcessJson(io.ComfyNode):
                             item["weight"] = -item["weight"]
                             negative.append(item)
 
-                if len(positive) > 0 or len(negative) > 0:
-                    if region is not None:
-                        region = Region.from_json(region)
+                if len(positive) > 0:
+                    positive_chunks.append(positive)
 
-                    if mask_region is not None:
-                        mask_region = MaskRegion.from_json(mask_region)
+                if len(negative) > 0:
+                    negative_chunks.append(negative)
 
-                    yield (positive, negative, region, mask_region)
+            if len(positive_chunks) > 0 or len(negative_chunks) > 0:
+                if region is not None:
+                    region = Region.from_json(region)
+
+                if mask_region is not None:
+                    mask_region = MaskRegion.from_json(mask_region)
+
+                yield (positive_chunks, negative_chunks, region, mask_region)
 
 
     """
@@ -303,23 +308,29 @@ class ProcessJson(io.ComfyNode):
     def only_positive(cls, json):
         chunks = []
 
-        for item in json:
-            if "chunk" in item:
-                prompts = []
-                region = item.get("region", None)
-                mask_region = item.get("mask-region", None)
+        for chunk in json:
+            region = chunk.get("region", None)
+            mask_region = chunk.get("mask-region", None)
 
-                for item in item["chunk"]:
+            new_chunks = []
+
+            for prompts in chunk["chunks"]:
+                new_prompts = []
+
+                for item in prompts:
                     if "prompt" in item:
                         if item["weight"] > 0.0:
-                            prompts.append(item)
+                            new_prompts.append(item)
 
-                if len(prompts) > 0:
-                    chunks.append({
-                        "chunk": prompts,
-                        "region": region,
-                        "mask-region": mask_region,
-                    })
+                if len(new_prompts) > 0:
+                    new_chunks.append(new_prompts)
+
+            if len(new_chunks) > 0:
+                chunks.append({
+                    "chunks": new_chunks,
+                    "region": region,
+                    "mask-region": mask_region,
+                })
 
         return chunks
 
@@ -331,25 +342,31 @@ class ProcessJson(io.ComfyNode):
     def only_negative(cls, json):
         chunks = []
 
-        for item in json:
-            if "chunk" in item:
-                prompts = []
-                region = item.get("region", None)
-                mask_region = item.get("mask-region", None)
+        for chunk in json:
+            region = chunk.get("region", None)
+            mask_region = chunk.get("mask-region", None)
 
-                for item in item["chunk"]:
+            new_chunks = []
+
+            for prompts in chunk["chunks"]:
+                new_prompts = []
+
+                for item in prompts:
                     if "prompt" in item:
                         if item["weight"] < 0.0:
                             item = item.copy()
                             item["weight"] = -item["weight"]
-                            prompts.append(item)
+                            new_prompts.append(item)
 
-                if len(prompts) > 0:
-                    chunks.append({
-                        "chunk": prompts,
-                        "region": region,
-                        "mask-region": mask_region,
-                    })
+                if len(new_prompts) > 0:
+                    new_chunks.append(new_prompts)
+
+            if len(new_chunks) > 0:
+                chunks.append({
+                    "chunks": new_chunks,
+                    "region": region,
+                    "mask-region": mask_region,
+                })
 
         return chunks
 
@@ -381,9 +398,9 @@ class ProcessJson(io.ComfyNode):
     def serialize_chunks(cls, json):
         chunks = []
 
-        for item in json:
-            if "chunk" in item:
-                prompt = cls.serialize_prompts((item for item in item["chunk"] if "prompt" in item))
+        for chunk in json:
+            for prompts in chunk["chunks"]:
+                prompt = cls.serialize_prompts(item for item in prompts if "prompt" in item)
 
                 if prompt is not None:
                     chunks.append(prompt)
@@ -798,8 +815,8 @@ class ApplyLoras(io.ComfyNode):
         loras = []
 
         for item in json:
-            if "chunk" in item:
-                for item in item["chunk"]:
+            for prompts in item["chunks"]:
+                for item in prompts:
                     if "lora" in item:
                         path = cls.lora_path(item["lora"])
                         weight = item["weight"]
@@ -911,6 +928,7 @@ class DebugJSON(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input as a string."),
+                io.String.Output(display_name="PROCESSED", tooltip="Processed JSON."),
 
                 io.Custom("JSON_PROMPT").Output(display_name="POSITIVE", tooltip="JSON that only contains positive prompts."),
                 io.Custom("JSON_PROMPT").Output(display_name="NEGATIVE", tooltip="JSON that only contains negative prompts."),
@@ -930,6 +948,7 @@ class DebugJSON(io.ComfyNode):
 
         return io.NodeOutput(
             dumps(json, indent=2),
+            dumps(processed, indent=2),
             positive,
             negative,
             dumps(loras, indent=2),
