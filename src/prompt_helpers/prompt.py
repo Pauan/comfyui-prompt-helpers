@@ -202,7 +202,7 @@ class ProcessState:
                     self.push_chunk(chunk)
 
             elif "bundle" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(None, None))
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], Chunk(chunk.region, chunk.mask_region))
 
             elif "bundle-inline" in item:
                 self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk)
