@@ -17,6 +17,9 @@ class Pixels:
     def evaluate_int(self, value):
         return self.pixels
 
+    def __hash__(self):
+        return hash(("pixels", self.pixels))
+
 
 class Percent:
     def __init__(self, percent):
@@ -24,6 +27,9 @@ class Percent:
 
     def evaluate_int(self, value):
         return int(round(self.percent * value))
+
+    def __hash__(self):
+        return hash(("percent", self.percent))
 
 
 class Region:
@@ -35,6 +41,12 @@ class Region:
         self.strength = strength
         self.feather = feather
         self.isolated = isolated
+
+    def __hash__(self):
+        return hash((self.x, self.y, self.width, self.height, self.strength, self.feather, self.isolated))
+
+    def hash_with_crop(self, crop):
+        return hash((crop, self.strength, self.feather, self.isolated))
 
     def evaluate_feather(self, width, height):
         return (
@@ -55,15 +67,18 @@ class Region:
 
     @classmethod
     def from_json(cls, json):
-        return Region(
-            cls.parse_int(json["x"]),
-            cls.parse_int(json["y"]),
-            cls.parse_int(json["width"]),
-            cls.parse_int(json["height"]),
-            json.get("strength", 1.0),
-            cls.parse_int(json.get("feather", 0)),
-            json.get("isolated", False),
-        )
+        if json is None:
+            return None
+        else:
+            return Region(
+                cls.parse_int(json["x"]),
+                cls.parse_int(json["y"]),
+                cls.parse_int(json["width"]),
+                cls.parse_int(json["height"]),
+                json.get("strength", 1.0),
+                cls.parse_int(json.get("feather", 0)),
+                json.get("isolated", False),
+            )
 
 
 class MaskRegion:
@@ -72,35 +87,91 @@ class MaskRegion:
         self.strength = strength
         self.isolated = isolated
 
+    def __hash__(self):
+        return hash((self.name, self.strength, self.isolated))
+
     @classmethod
     def from_json(cls, json):
-        return MaskRegion(
-            json["name"],
-            json.get("strength", 1.0),
-            json.get("isolated", False),
-        )
+        if json is None:
+            return None
+        else:
+            return MaskRegion(
+                json["name"],
+                json.get("strength", 1.0),
+                json.get("isolated", False),
+            )
 
 
-@io.comfytype(io_type="EZ_JSON")
-class JSON(io.ComfyTypeIO):
-    Type = list
+class Prompt:
+    def __init__(self, prompt, weight):
+        self.prompt = prompt
+        self.weight = weight
 
-    class Input(io.WidgetInput):
-        '''JSON input.'''
-        def __init__(self, id: str, display_name: str=None, optional=False, tooltip: str=None, lazy: bool=None,
-                     default: list=None, socketless: bool=None, force_input: bool=None, extra_dict=None, raw_link: bool=None, advanced: bool=None):
-            super().__init__(id, display_name, optional, tooltip, lazy, default, socketless, None, force_input, extra_dict, raw_link, advanced)
-            self.default: list
+    def serialize(self):
+        prompt = self.prompt + ","
 
-        def as_dict(self):
-            return super().as_dict()
+        if self.weight == 1.0:
+            return prompt
+        else:
+            return "({}:{}),".format(prompt, self.weight)
 
 
-class ProcessState:
+class Lora:
+    def __init__(self, path, weight):
+        self.path = path
+        self.weight = weight
+
+    def __eq__(self, other):
+        return self.path == other.path and self.weight == other.weight
+
+    def __hash__(self):
+        return hash((self.path, self.weight))
+
+    def to_json(self):
+        return {
+            "path": self.path,
+            "weight": self.weight,
+        }
+
+
+class Chunk:
+    def __init__(self, region, mask_region):
+        self.positive = []
+        self.negative = []
+        self.region = region
+        self.mask_region = mask_region
+
+
+class ProcessedJSON:
     def __init__(self):
-        self.seen_prompts = set()
         self.bundles = {}
         self.chunks = []
+        self.loras = []
+
+        self.cached_chunks = {}
+        self.global_chunk = self.add_chunk(None, None)
+
+
+    def add_chunk(self, region, mask_region):
+        region = Region.from_json(region)
+        mask_region = MaskRegion.from_json(mask_region)
+
+        chunk = self.cached_chunks.get((region, mask_region), None)
+
+        if chunk is None:
+            chunk = Chunk(region, mask_region)
+            self.cached_chunks[(region, mask_region)] = chunk
+            self.chunks.append(chunk)
+
+        return chunk
+
+
+    """
+        Converts list of prompts into text strings, ready to be CLIP encoded.
+    """
+    @staticmethod
+    def serialize_prompts(prompts):
+        return " ".join([prompt.serialize() for prompt in prompts])
 
 
     @staticmethod
@@ -138,7 +209,7 @@ class ProcessState:
         return prompt
 
 
-    def process_bundle(self, seen_bundles, outer_weight, item, name, chunk, prompts):
+    def process_bundle(self, seen_bundles, outer_weight, item, name, chunk, positive, negative):
         if item.get("enabled", True):
             if not name in self.bundles:
                 raise RuntimeError("Bundle {} not found.".format(name))
@@ -153,50 +224,62 @@ class ProcessState:
                 outer_weight * item.get("weight", 1.0),
                 bundle["children"],
                 chunk,
-                prompts,
+                positive,
+                negative,
             )
 
 
-    def process_children(self, seen_bundles, outer_weight, children, chunk, prompts):
+    def process_children(self, seen_bundles, outer_weight, children, chunk, positive, negative):
         for item in children:
             if "prompt" in item:
                 if item.get("enabled", True):
-                    prompt = ProcessState.cleanup_prompt(item["prompt"])
+                    prompt = ProcessedJSON.cleanup_prompt(item["prompt"])
 
                     if prompt != "":
-                        key = (id(chunk["region"]), id(chunk["mask-region"]), prompt)
+                        weight = round(outer_weight * item.get("weight", 1.0), 2)
 
-                        if key in self.seen_prompts:
-                            raise RuntimeError("Duplicate prompt: {}".format(prompt))
-                        else:
-                            self.seen_prompts.add(key)
+                        if weight > 0.0:
+                            positive.append(Prompt(prompt, weight))
 
-                        prompts.append({
-                            "prompt": prompt,
-                            "weight": round(outer_weight * item.get("weight", 1.0), 2),
-                        })
+                        elif weight < 0.0:
+                            negative.append(Prompt(prompt, -weight))
 
             elif "lora" in item:
                 if item.get("enabled", True):
-                    prompts.append({
-                        "lora": item["lora"],
-                        "weight": round(outer_weight * item.get("weight", 1.0), 2),
-                    })
+                    weight = round(outer_weight * item.get("weight", 1.0), 2)
+
+                    if weight > 0.0:
+                        self.loras.append(Lora(item["lora"], weight))
+
+                    elif weight < 0.0:
+                        raise RuntimeError("Loras must have a positive weight.")
 
             elif "bundle" in item:
-                sub_prompts = []
+                sub_positive = []
+                sub_negative = []
 
-                chunk["chunks"].append(sub_prompts)
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], chunk, sub_positive, sub_negative)
 
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle"], chunk, sub_prompts)
+                if len(sub_positive) > 0:
+                    chunk.positive.append(sub_positive)
+
+                if len(sub_negative) > 0:
+                    chunk.negative.append(sub_negative)
 
             elif "bundle-inline" in item:
-                self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk, prompts)
+                self.process_bundle(seen_bundles, outer_weight, item, item["bundle-inline"], chunk, positive, negative)
 
             else:
                 raise RuntimeError("Unknown type.")
 
 
+    """
+        * Expands all bundles
+        * Normalizes all weights
+        * Sorts into positive and negative prompts
+        * Collects loras
+        * Merges identical regions together
+    """
     def process(self, json):
         if not isinstance(json, list):
             raise RuntimeError("JSON is not an array.")
@@ -212,7 +295,6 @@ class ProcessState:
 
                         if name in self.bundles:
                             raise RuntimeError("Duplicate bundle: {}".format(name))
-
                         else:
                             self.bundles[name] = bundle
 
@@ -220,197 +302,36 @@ class ProcessState:
                 if not isinstance(item["chunk"], list):
                     raise RuntimeError("Chunk is not an array.")
 
-                prompts = []
+                chunk = self.add_chunk(item.get("region", None), item.get("mask-region", None))
 
-                chunk = {
-                    "chunks": [prompts],
-                    "region": item.get("region", None),
-                    "mask-region": item.get("mask-region", None),
-                }
+                positive = []
+                negative = []
 
-                self.chunks.append(chunk)
+                self.process_children(frozenset(), 1.0, item["chunk"], chunk, positive, negative)
 
-                self.process_children(frozenset(), 1.0, item["chunk"], chunk, prompts)
+                if len(positive) > 0:
+                    chunk.positive.append(positive)
+
+                if len(negative) > 0:
+                    chunk.negative.append(negative)
 
             else:
                 raise RuntimeError("Root must be either bundles or chunk.")
 
-        return self.chunks
 
+@io.comfytype(io_type="EZ_JSON")
+class JSON(io.ComfyTypeIO):
+    Type = list
 
-class ProcessJson(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="prompt_helpers: ProcessJson",
-            display_name="Process JSON",
-            description="Processes and normalizes JSON.",
-            inputs=[
-                JSON.Input("json"),
-            ],
-            outputs=[
-                JSON.Output(display_name="JSON"),
-            ],
-        )
+    class Input(io.WidgetInput):
+        '''JSON input.'''
+        def __init__(self, id: str, display_name: str=None, optional=False, tooltip: str=None, lazy: bool=None,
+                     default: list=None, socketless: bool=None, force_input: bool=None, extra_dict=None, raw_link: bool=None, advanced: bool=None):
+            super().__init__(id, display_name, optional, tooltip, lazy, default, socketless, None, force_input, extra_dict, raw_link, advanced)
+            self.default: list
 
-
-    """
-        Expands bundles, normalizing all weights.
-    """
-    @classmethod
-    def process_json(cls, json):
-        state = ProcessState()
-        return state.process(json)
-
-
-    @staticmethod
-    def iter_chunks(json):
-        for chunk in json:
-            region = chunk.get("region", None)
-            mask_region = chunk.get("mask-region", None)
-            positive_chunks = []
-            negative_chunks = []
-
-            for prompts in chunk["chunks"]:
-                positive = []
-                negative = []
-
-                for item in prompts:
-                    if "prompt" in item:
-                        if item["weight"] > 0.0:
-                            positive.append(item)
-
-                        elif item["weight"] < 0.0:
-                            item = item.copy()
-                            item["weight"] = -item["weight"]
-                            negative.append(item)
-
-                if len(positive) > 0:
-                    positive_chunks.append(positive)
-
-                if len(negative) > 0:
-                    negative_chunks.append(negative)
-
-            if len(positive_chunks) > 0 or len(negative_chunks) > 0:
-                if region is not None:
-                    region = Region.from_json(region)
-
-                if mask_region is not None:
-                    mask_region = MaskRegion.from_json(mask_region)
-
-                yield (positive_chunks, negative_chunks, region, mask_region)
-
-
-    """
-        Filters JSON to only have positive weights.
-    """
-    @classmethod
-    def only_positive(cls, json):
-        chunks = []
-
-        for chunk in json:
-            region = chunk.get("region", None)
-            mask_region = chunk.get("mask-region", None)
-
-            new_chunks = []
-
-            for prompts in chunk["chunks"]:
-                new_prompts = []
-
-                for item in prompts:
-                    if "prompt" in item:
-                        if item["weight"] > 0.0:
-                            new_prompts.append(item)
-
-                if len(new_prompts) > 0:
-                    new_chunks.append(new_prompts)
-
-            if len(new_chunks) > 0:
-                chunks.append({
-                    "chunks": new_chunks,
-                    "region": region,
-                    "mask-region": mask_region,
-                })
-
-        return chunks
-
-
-    """
-        Filters JSON to only have negative weights.
-    """
-    @classmethod
-    def only_negative(cls, json):
-        chunks = []
-
-        for chunk in json:
-            region = chunk.get("region", None)
-            mask_region = chunk.get("mask-region", None)
-
-            new_chunks = []
-
-            for prompts in chunk["chunks"]:
-                new_prompts = []
-
-                for item in prompts:
-                    if "prompt" in item:
-                        if item["weight"] < 0.0:
-                            item = item.copy()
-                            item["weight"] = -item["weight"]
-                            new_prompts.append(item)
-
-                if len(new_prompts) > 0:
-                    new_chunks.append(new_prompts)
-
-            if len(new_chunks) > 0:
-                chunks.append({
-                    "chunks": new_chunks,
-                    "region": region,
-                    "mask-region": mask_region,
-                })
-
-        return chunks
-
-
-    """
-        Converts list of prompts into text strings, ready to be CLIP encoded.
-    """
-    @staticmethod
-    def serialize_prompts(prompts):
-        text = []
-
-        for item in prompts:
-            prompt = item["prompt"] + ","
-            weight = item["weight"]
-
-            if weight == 1.0:
-                text.append(prompt)
-            else:
-                text.append("({}:{}),".format(prompt, weight))
-
-        if len(text) > 0:
-            return " ".join(text)
-
-
-    """
-        Converts chunks into text strings, ready to be CLIP encoded.
-    """
-    @classmethod
-    def serialize_chunks(cls, json):
-        chunks = []
-
-        for chunk in json:
-            for prompts in chunk["chunks"]:
-                prompt = cls.serialize_prompts(item for item in prompts if "prompt" in item)
-
-                if prompt is not None:
-                    chunks.append(prompt)
-
-        return chunks
-
-
-    @classmethod
-    def execute(cls, json) -> io.NodeOutput:
-        return io.NodeOutput(cls.process_json(json))
+        def as_dict(self):
+            return super().as_dict()
 
 
 class ParseLines(io.ComfyNode):
@@ -786,7 +707,7 @@ class ApplyLoras(io.ComfyNode):
             inputs=[
                 io.Model.Input("model"),
                 io.Clip.Input("clip"),
-                JSON.Input("json", optional=True, default=[]),
+                io.Custom("LORAS").Input("loras"),
             ],
             outputs=[
                 io.Model.Output(),
@@ -809,45 +730,26 @@ class ApplyLoras(io.ComfyNode):
             raise RuntimeError("Could not find lora: {}".format(path))
 
     @classmethod
-    def process_loras(cls, json):
-        seen = set()
-
-        loras = []
-
-        for item in json:
-            for prompts in item["chunks"]:
-                for item in prompts:
-                    if "lora" in item:
-                        path = cls.lora_path(item["lora"])
-                        weight = item["weight"]
-
-                        if path in seen:
-                            raise RuntimeError("Duplicate lora: {}".format(path))
-                        else:
-                            seen.add(path)
-
-                        if weight < 0.0:
-                            raise RuntimeError("Loras must have a positive weight.")
-
-                        loras.append({
-                            "path": path,
-                            "weight": weight,
-                        })
-
-        return loras
-
-    @classmethod
-    def execute(cls, model, clip, json) -> io.NodeOutput:
+    def execute(cls, model, clip, loras) -> io.NodeOutput:
         graph = GraphBuilder()
 
-        for lora in cls.process_loras(json):
+        seen = set()
+
+        for lora in loras:
+            path = cls.lora_path(lora.path)
+
+            if path in seen:
+                raise RuntimeError("Duplicate lora: {}".format(lora.path))
+            else:
+                seen.add(path)
+
             node = graph.node(
                 "LoraLoader",
                 model=model,
                 clip=clip,
-                lora_name=lora["path"],
-                strength_model=lora["weight"],
-                strength_clip=lora["weight"],
+                lora_name=path,
+                strength_model=lora.weight,
+                strength_clip=lora.weight,
             )
 
             model = node.out(0)
@@ -907,7 +809,13 @@ class DebugJSONPrompt(io.ComfyNode):
 
     @classmethod
     def execute(cls, json_prompt) -> io.NodeOutput:
-        chunks = ProcessJson.serialize_chunks(json_prompt)
+        chunks = []
+
+        for chunk in json_prompt:
+            prompt = ProcessedJSON.serialize_prompts(chunk)
+
+            if prompt != "":
+                chunks.append(prompt)
 
         return io.NodeOutput(
             dumps(chunks, indent=2),
@@ -928,7 +836,6 @@ class DebugJSON(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output(display_name="ORIGINAL", tooltip="Original JSON input as a string."),
-                io.String.Output(display_name="PROCESSED", tooltip="Processed JSON."),
 
                 io.Custom("JSON_PROMPT").Output(display_name="POSITIVE", tooltip="JSON that only contains positive prompts."),
                 io.Custom("JSON_PROMPT").Output(display_name="NEGATIVE", tooltip="JSON that only contains negative prompts."),
@@ -939,16 +846,20 @@ class DebugJSON(io.ComfyNode):
 
     @classmethod
     def execute(cls, json) -> io.NodeOutput:
-        processed = ProcessJson.process_json(json)
+        processed = ProcessedJSON()
+        processed.process(json)
 
-        positive = ProcessJson.only_positive(processed)
-        negative = ProcessJson.only_negative(processed)
+        positive = []
+        negative = []
 
-        loras = ApplyLoras.process_loras(processed)
+        for chunk in processed.chunks:
+            positive.extend(chunk.positive)
+            negative.extend(chunk.negative)
+
+        loras = [lora.to_json() for lora in processed.loras]
 
         return io.NodeOutput(
             dumps(json, indent=2),
-            dumps(processed, indent=2),
             positive,
             negative,
             dumps(loras, indent=2),

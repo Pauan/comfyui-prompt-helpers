@@ -11,6 +11,9 @@ class Crop:
     def __eq__(self, other):
         return self.left == other.left and self.right == other.right and self.top == other.top and self.bottom == other.bottom
 
+    def __hash__(self):
+        return hash((self.left, self.right, self.top, self.bottom))
+
 
     def width(self):
         return self.right - self.left
@@ -120,6 +123,8 @@ class Detail:
 
 class ProcessImage:
     def __init__(self, crop, detail, width, height, batch_size, select_index):
+        self.cached_crop_mask = None
+
         if crop is not None:
             self.crop = crop.clamp(width, height)
         else:
@@ -208,7 +213,7 @@ class ProcessImage:
 
     def resize_mask(self, graph, mask):
         if mask is not None and self.detail is not None:
-            mask = self.detail.apply_to_mask(mask)
+            mask = self.detail.apply_to_mask(graph, mask)
 
         return mask
 
@@ -251,14 +256,17 @@ class ProcessImage:
 
 
     def cropped_mask(self, graph):
-        image_crop = self.image_crop()
+        if self.cached_crop_mask is None:
+            image_crop = self.image_crop()
 
-        return graph.node(
-            "SolidMask",
-            value=0.0,
-            width=image_crop.width(),
-            height=image_crop.height(),
-        ).out(0)
+            self.cached_crop_mask = graph.node(
+                "SolidMask",
+                value=0.0,
+                width=image_crop.width(),
+                height=image_crop.height(),
+            ).out(0)
+
+        return self.cached_crop_mask
 
 
     def apply_set_mask(graph, mask, strength, isolated, conditioning):
@@ -276,7 +284,8 @@ class ProcessImage:
         ).out(0)
 
 
-    def apply_set_area(self, graph, region, cropped_mask, crop, conditioning):
+    def apply_set_area(self, graph, region, crop, conditioning):
+        cropped_mask = self.cropped_mask()
         image_crop = self.image_crop()
 
         (x_feather, y_feather) = region.evaluate_feather(self.width, self.height)

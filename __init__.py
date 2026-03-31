@@ -43,7 +43,6 @@ class PromptHelpers(ComfyExtension):
             ez.EZNotify,
 
             # hidden
-            prompt.ProcessJson,
             prompt.ApplyLoras,
         ]
 

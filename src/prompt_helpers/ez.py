@@ -4,7 +4,7 @@ import comfy
 import folder_paths
 import datetime
 import desktop_notifier
-from .prompt import (JSON, ProcessJson)
+from .prompt import (JSON, ProcessedJSON)
 from .upscale import get_image_tiles
 from .image import (Crop, Detail, ProcessImage)
 from .utils import (fold)
@@ -12,6 +12,258 @@ from .utils import (fold)
 
 # Copied from Comfy-Org/ComfyUI/nodes.py
 MAX_RESOLUTION=16384
+
+
+class EncodePrompts:
+    def __init__(self):
+        self.seen_prompts = set()
+        self.positive = []
+        self.negative = []
+
+    def check_prompt(self, prompt):
+        if prompt.prompt in self.seen_prompts:
+            raise RuntimeError("Duplicate prompt: {}".format(prompt.prompt))
+
+    def add_prompt(self, prompt):
+        self.check_prompt(prompt)
+        self.seen_prompts.add(prompt.prompt)
+
+
+class EncodeRegion(EncodePrompts):
+    def __init__(self, region, crop):
+        super().__init__()
+        self.region = region
+        self.crop = crop
+
+    def __hash__(self):
+        return hash(("region", self.region.hash_with_crop(self.crop)))
+
+    def isolated_crop(self, process):
+        if self.region.isolated:
+            return self.crop.clamp_to_parent(process.image_crop())
+        else:
+            return None
+
+    def apply(self, graph, process, conditioning):
+        return process.apply_set_area(graph, self.region, self.crop, conditioning)
+
+
+class EncodeMaskRegion(EncodePrompts):
+    def __init__(self, region, mask):
+        super().__init__()
+        self.region = region
+        self.mask = mask
+
+    def __hash__(self):
+        return hash(("mask-region", self.region))
+
+    def isolated_crop(self, process):
+        if self.region.isolated:
+            raise RuntimeError("isolated is not implemented yet for MASK-REGION")
+        else:
+            return None
+
+    def apply(self, graph, process, conditioning):
+        return ProcessImage.apply_set_mask(graph, self.mask, self.region.strength, self.region.isolated, conditioning)
+
+
+class EncodeRegions:
+    def __init__(self):
+        self.cached_prompts = {}
+        self.cached_regions = {}
+
+        self.global_region = EncodePrompts()
+
+        self.regions = []
+
+
+    def add_region(self, region):
+        cached = self.cached_regions.get(region, None)
+
+        if cached is None:
+            cached = region
+            self.cached_regions[region] = region
+            self.regions.append(region)
+
+        return cached
+
+
+    def add_prompts(self, region, prompts):
+        for prompt in prompts:
+            if region is not self.global_region:
+                self.global_region.check_prompt(prompt)
+            region.add_prompt(prompt)
+
+
+    def encode_prompts(self, graph, clip, prompts):
+        text = ProcessedJSON.serialize_prompts(prompts)
+
+        encoded = self.cached_prompts.get(text, None)
+
+        if encoded is None:
+            encoded = graph.node("CLIPTextEncode", text=text, clip=clip).out(0)
+            self.cached_prompts[text] = encoded
+
+        return encoded
+
+
+    def encode_chunks(self, graph, clip, region, chunks):
+        output = []
+
+        for prompts in chunks:
+            assert len(prompts) > 0
+
+            self.add_prompts(region, prompts)
+            output.append(self.encode_prompts(graph, clip, prompts))
+
+        return output
+
+
+    @staticmethod
+    def concat_conditions(graph, conditions):
+        # Combines the chunks together with ConditioningConcat
+        return fold(conditions, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
+
+
+    @staticmethod
+    def combine_conditions(graph, conditions):
+        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
+        return fold(conditions, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
+
+
+    @staticmethod
+    def append(list, item):
+        if item is not None:
+            list.append(item)
+        return list
+
+
+    def apply_controlnet(self, graph, clip, vae, process, control_net, positive, negative):
+        if positive is None:
+            positive = self.encode_prompts(graph, clip, [])
+
+        if negative is None:
+            negative = self.encode_prompts(graph, clip, [])
+
+        if control_net is not None:
+            for item in control_net:
+                image = process.apply_to_image(graph, item["image"])
+
+                apply_controlnet = graph.node(
+                    "ControlNetApplyAdvanced",
+                    positive=positive,
+                    negative=negative,
+                    control_net=item["control_net"],
+                    image=image,
+                    strength=item["strength"],
+                    start_percent=item["start_percent"],
+                    end_percent=item["end_percent"],
+                    vae=vae,
+                )
+
+                positive = apply_controlnet.out(0)
+                negative = apply_controlnet.out(1)
+
+        return (positive, negative)
+
+
+    def get_region(self, mask_regions, process, chunk):
+        if chunk.region is not None:
+            crop = process.region_to_crop(chunk.region)
+
+            if crop is not None:
+                return self.add_region(EncodeRegion(chunk.region, crop))
+
+            # If the region is outside of the crop region then it will be skipped
+            else:
+                return None
+
+        if chunk.mask_region is not None:
+            mask = mask_regions.get(chunk.mask_region.name, None)
+
+            if mask is not None:
+                return self.add_region(EncodeMaskRegion(chunk.mask_region, mask))
+
+            else:
+                raise RuntimeError("Mask region \"{}\" not found.".format(chunk.mask_region.name))
+
+        return self.global_region
+
+
+    def process(self, graph, clip, vae, processed_json, mask_regions, process, control_net):
+        for chunk in processed_json.chunks:
+            region = self.get_region(mask_regions, process, chunk)
+
+            if region is not None:
+                region.positive.extend(self.encode_chunks(graph, clip, region, chunk.positive))
+                region.negative.extend(self.encode_chunks(graph, clip, region, chunk.negative))
+
+
+        normal_positive = []
+        normal_negative = []
+
+        isolated_positive = []
+        isolated_negative = []
+
+
+        global_positive = EncodeRegions.concat_conditions(graph, self.global_region.positive)
+        global_negative = EncodeRegions.concat_conditions(graph, self.global_region.negative)
+
+        if global_positive is not None:
+            normal_positive.append(global_positive)
+
+        if global_negative is not None:
+            normal_negative.append(global_negative)
+
+
+        for region in self.regions:
+            isolated_crop = region.isolated_crop(process)
+
+            if isolated_crop is not None:
+                # Concats the global prompt with the region prompt
+                # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
+                positive = EncodeRegions.concat_conditions(graph, EncodeRegions.append(region.positive, global_positive))
+                negative = EncodeRegions.concat_conditions(graph, EncodeRegions.append(region.negative, global_negative))
+
+                # Crop the controlnet to the isolated region
+                (positive, negative) = self.apply_controlnet(graph, clip, vae, process.with_crop(isolated_crop), control_net, positive, negative)
+
+                positive = region.apply(graph, process, positive)
+                negative = region.apply(graph, process, negative)
+
+                isolated_positive.append(positive)
+                isolated_negative.append(negative)
+
+            else:
+                if len(region.positive) > 0:
+                    positive = EncodeRegions.concat_conditions(graph, EncodeRegions.append(region.positive, global_positive))
+
+                    assert positive is not None
+
+                    positive = region.apply(graph, process, positive)
+                    normal_positive.append(positive)
+
+                if len(region.negative) > 0:
+                    negative = EncodeRegions.concat_conditions(graph, EncodeRegions.append(region.negative, global_negative))
+
+                    assert negative is not None
+
+                    negative = region.apply(graph, process, negative)
+                    normal_negative.append(negative)
+
+
+        positive = EncodeRegions.combine_conditions(graph, normal_positive)
+        negative = EncodeRegions.combine_conditions(graph, normal_negative)
+
+        (positive, negative) = self.apply_controlnet(graph, clip, vae, process, control_net, positive, negative)
+
+        isolated_positive.append(positive)
+        isolated_negative.append(negative)
+
+        return (
+            EncodeRegions.combine_conditions(graph, isolated_positive),
+            EncodeRegions.combine_conditions(graph, isolated_negative),
+        )
 
 
 class EZCheckpoint(io.ComfyNode):
@@ -468,242 +720,12 @@ class EZGenerate(io.ComfyNode):
 
 
     @staticmethod
-    def apply_controlnet(graph, vae, process, control_net, positive, negative):
-        if control_net is not None:
-            for item in control_net:
-                image = process.apply_to_image(graph, item["image"])
-
-                apply_controlnet = graph.node(
-                    "ControlNetApplyAdvanced",
-                    positive=positive,
-                    negative=negative,
-                    control_net=item["control_net"],
-                    image=image,
-                    strength=item["strength"],
-                    start_percent=item["start_percent"],
-                    end_percent=item["end_percent"],
-                    vae=vae,
-                )
-
-                positive = apply_controlnet.out(0)
-                negative = apply_controlnet.out(1)
-
-        return (positive, negative)
-
-
-    @staticmethod
-    def concat_conditions(graph, chunks):
-        # Combines the chunks together with ConditioningConcat
-        output = fold(chunks, lambda x, y: graph.node("ConditioningConcat", conditioning_to=x, conditioning_from=y).out(0))
-
-        if output is None:
-            return []
-        else:
-            return [output]
-
-
-    @staticmethod
-    def combine_conditions(graph, chunks):
-        # We have to use ConditioningCombine because ConditioningConcat does not work with ConditioningSetMask
-        output = fold(chunks, lambda x, y: graph.node("ConditioningCombine", conditioning_1=x, conditioning_2=y).out(0))
-
-        if output is None:
-            return []
-        else:
-            return [output]
-
-
-    @staticmethod
-    def default_condition(graph, clip, chunks):
-        l = len(chunks)
-
-        assert l < 2
-
-        if l == 0:
-            return graph.node("CLIPTextEncode", text="", clip=clip).out(0)
-
-        else:
-            return chunks[0]
-
-
-    @classmethod
-    def convert_prompt(cls, graph, clip, vae, json, mask_regions, process, control_net):
-        global_positive = []
-        global_negative = []
-
-        region_chunks = []
-        mask_chunks = []
-
-        for (positive, negative, region, mask_region) in ProcessJson.iter_chunks(json):
-            is_global = True
-
-            if mask_region is not None:
-                is_global = False
-
-            crop = None
-
-            if region is not None:
-                is_global = False
-
-                # If the region is outside of the crop region then `crop` will be None, so it will be skipped
-                crop = process.region_to_crop(region)
-
-
-            if is_global or mask_region is not None or crop is not None:
-                positive_chunks = []
-                negative_chunks = []
-
-                for prompts in positive:
-                    text = ProcessJson.serialize_prompts(prompts)
-
-                    if text is not None:
-                        positive_chunks.append(graph.node("CLIPTextEncode", text=text, clip=clip).out(0))
-
-                for prompts in negative:
-                    text = ProcessJson.serialize_prompts(prompts)
-
-                    if text is not None:
-                        negative_chunks.append(graph.node("CLIPTextEncode", text=text, clip=clip).out(0))
-
-
-                if is_global:
-                    global_positive.extend(positive_chunks)
-                    global_negative.extend(negative_chunks)
-
-
-                if mask_region is not None:
-                    mask = mask_regions.get(mask_region.name, None)
-
-                    if mask is None:
-                        raise RuntimeError("Mask region \"{}\" not found.".format(mask_region.name))
-
-                    chunk = {
-                        "positive": [],
-                        "negative": [],
-                        "mask": mask,
-                        "region": mask_region,
-                    }
-
-                    chunk["positive"].extend(positive_chunks)
-                    chunk["negative"].extend(negative_chunks)
-
-                    mask_chunks.append(chunk)
-
-
-                if crop is not None:
-                    chunk = {
-                        "positive": [],
-                        "negative": [],
-                        "crop": crop,
-                        "region": region,
-                    }
-
-                    chunk["positive"].extend(positive_chunks)
-                    chunk["negative"].extend(negative_chunks)
-
-                    region_chunks.append(chunk)
-
-
-        # Chunks that have control net applied
-        control_positive = []
-        control_negative = []
-
-        # Chunks that do not have control net applied
-        isolated_positive = []
-        isolated_negative = []
-
-
-        global_positive = cls.concat_conditions(graph, global_positive)
-        global_negative = cls.concat_conditions(graph, global_negative)
-
-        control_positive.extend(global_positive)
-        control_negative.extend(global_negative)
-
-
-        cropped_mask = process.cropped_mask(graph)
-
-        for chunk in region_chunks:
-            region = chunk["region"]
-
-            # Concats the global prompt with the region prompt
-            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
-            chunk["positive"].extend(global_positive)
-            chunk["negative"].extend(global_negative)
-
-            positive = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["positive"]))
-            negative = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["negative"]))
-
-            if region.isolated:
-                crop = chunk["crop"].clamp_to_parent(process.image_crop())
-
-                # Crop the controlnet to the region
-                (positive, negative) = cls.apply_controlnet(graph, vae, process.with_crop(crop), control_net, positive, negative)
-
-                positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
-                negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
-
-                isolated_positive.append(positive)
-                isolated_negative.append(negative)
-
-            else:
-                positive = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], positive)
-                negative = process.apply_set_area(graph, region, cropped_mask, chunk["crop"], negative)
-
-                control_positive.append(positive)
-                control_negative.append(negative)
-
-
-        for chunk in mask_chunks:
-            region = chunk["region"]
-            mask = chunk["mask"]
-
-            # Concats the global prompt with the region prompt
-            # If we don't do this then the global prompt will have a weak effect inside the region and it causes artifacting
-            chunk["positive"].extend(global_positive)
-            chunk["negative"].extend(global_negative)
-
-            positive = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["positive"]))
-            negative = cls.default_condition(graph, clip, cls.concat_conditions(graph, chunk["negative"]))
-
-            positive = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, positive)
-            negative = ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, negative)
-
-            # @TODO make control nets work properly with isolated regions
-            if region.isolated:
-                isolated_positive.append(positive)
-                isolated_negative.append(negative)
-
-            else:
-                control_positive.append(positive)
-                control_negative.append(negative)
-
-
-        control_positive = cls.default_condition(graph, clip, cls.combine_conditions(graph, control_positive))
-        control_negative = cls.default_condition(graph, clip, cls.combine_conditions(graph, control_negative))
-
-        (final_positive, final_negative) = cls.apply_controlnet(graph, vae, process, control_net, control_positive, control_negative)
-
-
-        isolated_positive = cls.combine_conditions(graph, isolated_positive)
-        isolated_negative = cls.combine_conditions(graph, isolated_negative)
-
-        if len(isolated_positive) > 0:
-            final_positive = cls.combine_conditions(graph, [final_positive, isolated_positive[0]])
-
-        if len(isolated_negative) > 0:
-            final_negative = cls.combine_conditions(graph, [final_negative, isolated_negative[0]])
-
-
-        return (final_positive, final_negative)
-
-
-    @staticmethod
-    def apply_loras(graph, model, clip, json):
+    def apply_loras(graph, model, clip, processed):
         apply_loras = graph.node(
             "prompt_helpers: ApplyLoras",
             model=model,
             clip=clip,
-            json=json,
+            loras=processed.loras,
         )
 
         return (apply_loras.out(0), apply_loras.out(1))
@@ -711,11 +733,14 @@ class EZGenerate(io.ComfyNode):
 
     @classmethod
     def process_json(cls, graph, model, clip, vae, json, mask_regions, process, control_net=None):
-        process_json = ProcessJson.process_json(json)
+        processed_json = ProcessedJSON()
+        processed_json.process(json)
 
-        (model, clip) = cls.apply_loras(graph, model, clip, process_json)
+        (model, clip) = cls.apply_loras(graph, model, clip, processed_json)
 
-        (positive, negative) = cls.convert_prompt(graph, clip, vae, process_json, mask_regions, process, control_net)
+        encoded = EncodeRegions()
+
+        (positive, negative) = encoded.process(graph, clip, vae, processed_json, mask_regions, process, control_net)
 
         return (model, clip, positive, negative)
 
@@ -942,7 +967,7 @@ class EZGenerate(io.ComfyNode):
 
         # ComfyUI changes the image even outside of the mask, so we overwrite the image
         # to guarantee that *only* the masked area will be changed
-        full_image = process.composite_image(graph, original_image, downscaled_image, cropped_mask)
+        full_image = process.composite_image(graph, original_image, downscaled_image, cropped_mask)\
 
         return io.NodeOutput(
             full_image,
