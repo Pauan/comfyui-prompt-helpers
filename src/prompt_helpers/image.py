@@ -1,3 +1,4 @@
+import math
 from .utils import clamp
 
 
@@ -76,50 +77,87 @@ class Crop:
 
 
 class Detail:
-    def __init__(self, resize_multiplier, scale_method):
-        self.resize_multiplier = resize_multiplier
+    def __init__(self, resize_type, scale_method):
+        self.resize_type = resize_type
         self.scale_method = scale_method
 
 
-    def invert(self):
-        resize_multiplier = 1.0 / self.resize_multiplier
+    def is_noop(self):
+        return self.resize_type["resize_type"] == "scale by multiplier" and self.resize_type["multiplier"] == 1.0
 
-        # We use `area` algorithm for downscaling.
-        if resize_multiplier < 1.0:
-            scale_method = "area"
-        else:
-            scale_method = self.scale_method
 
-        return Detail(resize_multiplier, scale_method)
+    def scale(self, width, height):
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L281-L289
+        if self.resize_type["resize_type"] == "scale by multiplier":
+            width = int(round(width * self.resize_type["multiplier"]))
+            height = int(round(height * self.resize_type["multiplier"]))
+
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L346-L357
+        elif self.resize_type["resize_type"] == "scale total pixels":
+            total = self.resize_type["megapixels"] * 1024 * 1024
+
+            scale_by = math.sqrt(total / (width * height))
+
+            width = int(round(width * scale_by))
+            height = int(round(height * scale_by))
+
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L306-L324
+        elif self.resize_type["resize_type"] == "scale longer dimension":
+            largest_size = self.resize_type["longer_size"]
+
+            if height > width:
+                width = int(round((width / height) * largest_size))
+                height = largest_size
+            elif width > height:
+                height = int(round((height / width) * largest_size))
+                width = largest_size
+            else:
+                height = largest_size
+                width = largest_size
+
+        return (width, height)
 
 
     def apply_to_image(self, graph, image):
-        if self.resize_multiplier == 1.0:
+        if self.is_noop():
             return image
 
         else:
-            return graph.node(
-                "ImageScaleBy",
-                image=image,
-                scale_by=self.resize_multiplier,
-                upscale_method=self.scale_method,
-            ).out(0)
+            # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
+            if self.resize_type["resize_type"] == "scale by multiplier":
+                return graph.node(
+                    "ImageScaleBy",
+                    image=image,
+                    scale_by=self.resize_type["multiplier"],
+                    upscale_method=self.scale_method,
+                ).out(0)
+
+            elif self.resize_type["resize_type"] == "scale total pixels":
+                return graph.node(
+                    "ImageScaleToTotalPixels",
+                    image=image,
+                    megapixels=self.resize_type["megapixels"],
+                    upscale_method=self.scale_method,
+                    resolution_steps=1,
+                ).out(0)
+
+            elif self.resize_type["resize_type"] == "scale longer dimension":
+                return graph.node(
+                    "ImageScaleToMaxDimension",
+                    image=image,
+                    largest_size=self.resize_type["longer_size"],
+                    upscale_method=self.scale_method,
+                ).out(0)
 
 
-    # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
     def apply_to_mask(self, graph, mask):
-        if self.resize_multiplier == 1.0:
+        if self.is_noop():
             return mask
 
         else:
             image = graph.node("MaskToImage", mask=mask).out(0)
 
-            resized = graph.node(
-                "ImageScaleBy",
-                image=image,
-                scale_by=self.resize_multiplier,
-                upscale_method=self.scale_method,
-            ).out(0)
+            resized = self.apply_to_image(graph, image)
 
             return graph.node("ImageToMask", image=resized, channel="red").out(0)
 
@@ -154,10 +192,13 @@ class ProcessImage:
     def empty_latent(self, graph):
         crop = self.image_crop()
 
-        if self.detail is not None:
-            crop = crop.scale(self.detail.resize_multiplier)
+        width = crop.width()
+        height = crop.height()
 
-        latent_image = graph.node("EmptyLatentImage", width=crop.width(), height=crop.height(), batch_size=self.batch_size).out(0)
+        if self.detail is not None:
+            (width, height) = self.detail.scale(width, height)
+
+        latent_image = graph.node("EmptyLatentImage", width=width, height=height, batch_size=self.batch_size).out(0)
 
         if self.select_index > -1:
             latent_image = graph.node("LatentFromBatch", samples=latent_image, batch_index=self.select_index, length=1).out(0)
@@ -176,10 +217,20 @@ class ProcessImage:
 
 
     def downscale_image(self, graph, image):
-        if self.detail is not None:
-            image = self.detail.invert().apply_to_image(graph, image)
+        if self.detail is None or self.detail.is_noop():
+            return image
 
-        return image
+        else:
+            crop = self.image_crop()
+
+            return graph.node(
+                "ImageScale",
+                image=image,
+                width=crop.width(),
+                height=crop.height(),
+                crop="center",
+                upscale_method="area",
+            ).out(0)
 
 
     def repeat_latent(self, graph, latent):

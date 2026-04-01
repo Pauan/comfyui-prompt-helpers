@@ -408,7 +408,21 @@ class EZDetail(io.ComfyNode):
             inputs=[
                 io.Custom("EZ_IMAGE_SETTINGS").Input("image_settings", display_name="IMAGE"),
 
-                io.Float.Input("multiplier", default=2.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+                io.DynamicCombo.Input(
+                    "resize_type",
+                    tooltip="Selects how to resize",
+                    options=[
+                        io.DynamicCombo.Option("scale total pixels", [
+                            io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01, tooltip="Target total megapixels (e.g., 1.0 ≈ 1024×1024). Aspect ratio is preserved."),
+                        ]),
+                        io.DynamicCombo.Option("scale by multiplier", [
+                            io.Float.Input("multiplier", default=2.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
+                        ]),
+                        io.DynamicCombo.Option("scale longer dimension", [
+                            io.Int.Input("longer_size", default=1024, min=0, max=MAX_RESOLUTION, step=1, tooltip="The longer edge will be resized to this value. Aspect ratio is preserved."),
+                        ]),
+                    ],
+                ),
 
                 io.Combo.Input(
                     "scale_method",
@@ -423,9 +437,9 @@ class EZDetail(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image_settings, multiplier, scale_method) -> io.NodeOutput:
+    def execute(cls, image_settings, resize_type, scale_method) -> io.NodeOutput:
         image_settings = image_settings.copy()
-        image_settings["detail"] = Detail(multiplier, scale_method)
+        image_settings["detail"] = Detail(resize_type, scale_method)
         return io.NodeOutput(image_settings)
 
 
@@ -969,7 +983,7 @@ class EZGenerate(io.ComfyNode):
 
         # ComfyUI changes the image even outside of the mask, so we overwrite the image
         # to guarantee that *only* the masked area will be changed
-        full_image = process.composite_image(graph, original_image, downscaled_image, cropped_mask)\
+        full_image = process.composite_image(graph, original_image, downscaled_image, cropped_mask)
 
         return io.NodeOutput(
             full_image,
