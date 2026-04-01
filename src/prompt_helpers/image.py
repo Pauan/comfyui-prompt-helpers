@@ -71,6 +71,9 @@ class Crop:
     def apply_to_image(self, graph, image):
         return graph.node("ImageCrop", image=image, x=self.left, y=self.top, width=self.width(), height=self.height()).out(0)
 
+    def apply_to_mask(self, graph, mask):
+        return graph.node("CropMask", mask=mask, x=self.left, y=self.top, width=self.width(), height=self.height()).out(0)
+
 
 class Detail:
     def __init__(self, resize_multiplier, scale_method):
@@ -206,7 +209,7 @@ class ProcessImage:
 
     def crop_mask(self, graph, mask):
         if mask is not None and self.crop is not None:
-            mask = graph.node("CropMask", mask=mask, x=self.crop.left, y=self.crop.top, width=self.crop.width(), height=self.crop.height()).out(0)
+            mask = self.crop.apply_to_mask(graph, mask)
 
         return mask
 

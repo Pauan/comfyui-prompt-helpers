@@ -182,6 +182,8 @@ class EncodeRegions:
             mask = mask_regions.get(chunk.mask_region.name, None)
 
             if mask is not None:
+                mask = process.crop_mask(graph, mask)
+
                 return self.add_region(EncodeMaskRegion(chunk.mask_region, mask))
 
             else:
