@@ -772,17 +772,17 @@ class EZGenerate(io.ComfyNode):
     @staticmethod
     def combine_image_with_mask(graph, image, mask):
         if mask is not None:
-            size = graph.node("GetImageSize", image=image)
+            size = graph.node("GetImageSize", image=image).out(2)
 
-            mask = graph.node("InvertMask", mask=mask)
-            mask = graph.node("MaskToImage", mask=mask.out(0))
-            mask = graph.node("RepeatImageBatch", image=mask.out(0), amount=size.out(2))
-            mask = graph.node("ImageToMask", image=mask.out(0), channel="red")
+            mask = graph.node("InvertMask", mask=mask).out(0)
+            mask = graph.node("MaskToImage", mask=mask).out(0)
+            mask = graph.node("RepeatImageBatch", image=mask, amount=size).out(0)
+            mask = graph.node("ImageToMask", image=mask, channel="red").out(0)
 
             return graph.node(
                 "JoinImageWithAlpha",
                 image=image,
-                alpha=mask.out(0),
+                alpha=mask,
             ).out(0)
 
         else:
