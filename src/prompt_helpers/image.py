@@ -1,9 +1,92 @@
 import math
-from .utils import clamp
+from .utils import (clamp, snap_to_increment)
+
+# Stable diffusion currently requires images to be multiplies of 8
+INCREMENT = 8
+
+DEFAULT_SCALE_METHOD = "lanczos"
+DOWNSCALE_METHOD = "area"
+
+
+class Size:
+    def __init__(self, width, height):
+        assert isinstance(width, int)
+        assert isinstance(height, int)
+
+        self.width = width
+        self.height = height
+
+    def __eq__(self, other):
+        return self.width == other.width and self.height == other.height
+
+
+    def snap_to_increment(self, increment):
+        return Size(snap_to_increment(self.width, increment), snap_to_increment(self.height, increment))
+
+
+    def scale(self, info):
+        width = self.width
+        height = self.height
+
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L281-L289
+        if info["resize_type"] == "scale by multiplier":
+            width = int(round(width * info["multiplier"]))
+            height = int(round(height * info["multiplier"]))
+
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L346-L357
+        elif info["resize_type"] == "scale total pixels":
+            total = info["megapixels"] * 1024 * 1024
+
+            scale_by = math.sqrt(total / (width * height))
+
+            width = int(round(width * scale_by))
+            height = int(round(height * scale_by))
+
+        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L306-L324
+        elif info["resize_type"] == "scale longer dimension":
+            largest_size = info["longer_size"]
+
+            if height > width:
+                width = int(round((width / height) * largest_size))
+                height = largest_size
+            elif width > height:
+                height = int(round((height / width) * largest_size))
+                width = largest_size
+            else:
+                height = largest_size
+                width = largest_size
+
+        else:
+            raise RuntimeError("Unknown resize_type {}".format(info["resize_type"]))
+
+        return Size(width, height)
+
+
+    def resize_image(self, graph, image, scale_method):
+        # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
+        return graph.node(
+            "ImageScale",
+            image=image,
+            width=self.width,
+            height=self.height,
+            crop="disabled",
+            upscale_method=scale_method,
+        ).out(0)
+
+
+    def resize_mask(self, graph, mask, scale_method):
+        image = graph.node("MaskToImage", mask=mask).out(0)
+        resized = self.resize_image(graph, image, scale_method)
+        return graph.node("ImageToMask", image=resized, channel="red").out(0)
 
 
 class Crop:
     def __init__(self, left, right, top, bottom):
+        assert isinstance(left, int)
+        assert isinstance(right, int)
+        assert isinstance(top, int)
+        assert isinstance(bottom, int)
+
         self.left = left
         self.right = right
         self.top = top
@@ -15,6 +98,9 @@ class Crop:
     def __hash__(self):
         return hash((self.left, self.right, self.top, self.bottom))
 
+    def copy(self):
+        return Crop(self.left, self.right, self.top, self.bottom)
+
 
     def width(self):
         return self.right - self.left
@@ -22,9 +108,42 @@ class Crop:
     def height(self):
         return self.bottom - self.top
 
+    def size(self):
+        return Size(self.width(), self.height())
+
 
     def pad(self, horizontal, vertical):
         return Crop(self.left - horizontal, self.right + horizontal, self.top - vertical, self.bottom + vertical)
+
+
+    def relative_to_parent(self, parent):
+        clamped = self.clamp_to_parent(parent)
+
+        shift_x = clamped.left - self.left
+        shift_y = clamped.top - self.top
+
+        assert shift_x >= 0
+        assert shift_y >= 0
+
+        crop = Crop(
+            shift_x,
+            shift_x + clamped.width(),
+            shift_y,
+            shift_y + clamped.height(),
+        )
+
+        assert crop.left >= 0
+        assert crop.right >= 0
+        assert crop.top >= 0
+        assert crop.bottom >= 0
+
+        assert crop.right >= crop.left
+        assert crop.bottom >= crop.top
+
+        assert crop.width() <= parent.width()
+        assert crop.height() <= parent.height()
+
+        return crop
 
 
     def scale(self, multiplier):
@@ -35,22 +154,6 @@ class Crop:
             int(round(self.top * multiplier)),
             int(round(self.bottom * multiplier)),
         )
-
-
-    def clamp(self, image_width, image_height):
-        left = clamp(self.left, 0, image_width)
-        right = clamp(self.right, 0, image_width)
-
-        top = clamp(self.top, 0, image_height)
-        bottom = clamp(self.bottom, 0, image_height)
-
-        if right < left:
-            right = left
-
-        if bottom < top:
-            bottom = top
-
-        return Crop(left, right, top, bottom)
 
 
     def clamp_to_parent(self, parent):
@@ -69,11 +172,50 @@ class Crop:
         return Crop(left, right, top, bottom)
 
 
-    def apply_to_image(self, graph, image):
-        return graph.node("ImageCrop", image=image, x=self.left, y=self.top, width=self.width(), height=self.height()).out(0)
+    def snap_to_increment(self, parent, increment):
+        assert self.right >= self.left
+        assert self.bottom >= self.top
 
-    def apply_to_mask(self, graph, mask):
-        return graph.node("CropMask", mask=mask, x=self.left, y=self.top, width=self.width(), height=self.height()).out(0)
+        width = snap_to_increment(self.right - self.left, increment)
+        height = snap_to_increment(self.bottom - self.top, increment)
+
+        # Increases the crop to the right and bottom
+        right = clamp(self.left + width, parent.left, parent.right)
+        bottom = clamp(self.top + height, parent.top, parent.bottom)
+
+        width = snap_to_increment(right - self.left, increment)
+        height = snap_to_increment(bottom - self.top, increment)
+
+        # If the crop was clamped, increases the crop to the left and top
+        left = clamp(right - width, parent.left, parent.right)
+        top = clamp(bottom - height, parent.top, parent.bottom)
+
+        assert right >= left
+        assert bottom >= top
+
+        return Crop(left, right, top, bottom)
+
+
+    def crop_image(self, graph, image):
+        return graph.node(
+            "ImageCrop",
+            image=image,
+            x=self.left,
+            y=self.top,
+            width=self.width(),
+            height=self.height(),
+        ).out(0)
+
+
+    def crop_mask(self, graph, mask):
+        return graph.node(
+            "CropMask",
+            mask=mask,
+            x=self.left,
+            y=self.top,
+            width=self.width(),
+            height=self.height(),
+        ).out(0)
 
 
 class Detail:
@@ -82,155 +224,57 @@ class Detail:
         self.scale_method = scale_method
 
 
-    def is_noop(self):
-        return self.resize_type["resize_type"] == "scale by multiplier" and self.resize_type["multiplier"] == 1.0
-
-
-    def scale(self, width, height):
-        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L281-L289
-        if self.resize_type["resize_type"] == "scale by multiplier":
-            width = int(round(width * self.resize_type["multiplier"]))
-            height = int(round(height * self.resize_type["multiplier"]))
-
-        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L346-L357
-        elif self.resize_type["resize_type"] == "scale total pixels":
-            total = self.resize_type["megapixels"] * 1024 * 1024
-
-            scale_by = math.sqrt(total / (width * height))
-
-            width = int(round(width * scale_by))
-            height = int(round(height * scale_by))
-
-        # https://github.com/Comfy-Org/ComfyUI/blob/7d437687c260df7772c603658111148e0e863e59/comfy_extras/nodes_post_processing.py#L306-L324
-        elif self.resize_type["resize_type"] == "scale longer dimension":
-            largest_size = self.resize_type["longer_size"]
-
-            if height > width:
-                width = int(round((width / height) * largest_size))
-                height = largest_size
-            elif width > height:
-                height = int(round((height / width) * largest_size))
-                width = largest_size
-            else:
-                height = largest_size
-                width = largest_size
-
-        return (width, height)
-
-
-    def apply_to_image(self, graph, image):
-        if self.is_noop():
-            return image
-
-        else:
-            # TODO replace with ResizeImageMaskNode after https://github.com/Comfy-Org/ComfyUI/issues/12566 is fixed
-            if self.resize_type["resize_type"] == "scale by multiplier":
-                return graph.node(
-                    "ImageScaleBy",
-                    image=image,
-                    scale_by=self.resize_type["multiplier"],
-                    upscale_method=self.scale_method,
-                ).out(0)
-
-            elif self.resize_type["resize_type"] == "scale total pixels":
-                return graph.node(
-                    "ImageScaleToTotalPixels",
-                    image=image,
-                    megapixels=self.resize_type["megapixels"],
-                    upscale_method=self.scale_method,
-                    resolution_steps=1,
-                ).out(0)
-
-            elif self.resize_type["resize_type"] == "scale longer dimension":
-                return graph.node(
-                    "ImageScaleToMaxDimension",
-                    image=image,
-                    largest_size=self.resize_type["longer_size"],
-                    upscale_method=self.scale_method,
-                ).out(0)
-
-
-    def apply_to_mask(self, graph, mask):
-        if self.is_noop():
-            return mask
-
-        else:
-            image = graph.node("MaskToImage", mask=mask).out(0)
-
-            resized = self.apply_to_image(graph, image)
-
-            return graph.node("ImageToMask", image=resized, channel="red").out(0)
-
-
 class ProcessImage:
     def __init__(self, crop, detail, width, height, batch_size, select_index):
-        self.cached_crop_mask = None
+        # Bounds for the original image
+        self.bounds = Crop(0, width, 0, height)
 
-        if crop is not None:
-            self.crop = crop.clamp(width, height)
+        # Cropped part of the original image
+        if crop is None:
+            self.crop = self.bounds.copy()
+            self.snapped_crop = self.crop.copy()
+
         else:
-            self.crop = None
+            self.crop = crop
+            self.snapped_crop = self.crop.snap_to_increment(self.bounds, INCREMENT)
+
+        # TODO figure out a better solution for allowing crops outside of the bounds
+        assert self.crop == self.crop.clamp_to_parent(self.bounds)
+        assert self.snapped_crop == self.snapped_crop.clamp_to_bounds(self.bounds)
+
+        # Resized size of the cropped part
+        if detail is None:
+            self.resized_size = self.snapped_crop.size().snap_to_increment(INCREMENT)
+            self.scale_method = DEFAULT_SCALE_METHOD
+        else:
+            self.resized_size = self.snapped_crop.size().scale(detail.resize_type).snap_to_increment(INCREMENT)
+            self.scale_method = detail.scale_method
 
         self.detail = detail
-        self.width = width
-        self.height = height
         self.batch_size = batch_size
         self.select_index = select_index
+        self.cached_crop_mask = None
 
 
     def with_crop(self, crop):
-        return ProcessImage(crop, self.detail, self.width, self.height, self.batch_size, self.select_index)
-
-
-    def image_crop(self):
-        if self.crop:
-            return self.crop
-        else:
-            return Crop(0, self.width, 0, self.height)
+        return ProcessImage(crop, self.detail, self.bounds.width(), self.bounds.height(), self.batch_size, self.select_index)
 
 
     def empty_latent(self, graph):
-        crop = self.image_crop()
+        assert self.resized_size.width % INCREMENT == 0
+        assert self.resized_size.height % INCREMENT == 0
 
-        width = crop.width()
-        height = crop.height()
-
-        if self.detail is not None:
-            (width, height) = self.detail.scale(width, height)
-
-        latent_image = graph.node("EmptyLatentImage", width=width, height=height, batch_size=self.batch_size).out(0)
+        latent_image = graph.node(
+            "EmptyLatentImage",
+            width=self.resized_size.width,
+            height=self.resized_size.height,
+            batch_size=self.batch_size,
+        ).out(0)
 
         if self.select_index > -1:
             latent_image = graph.node("LatentFromBatch", samples=latent_image, batch_index=self.select_index, length=1).out(0)
 
         return latent_image
-
-
-    def apply_to_image(self, graph, image):
-        if self.crop is not None:
-            image = self.crop.apply_to_image(graph, image)
-
-        if self.detail is not None:
-            image = self.detail.apply_to_image(graph, image)
-
-        return image
-
-
-    def downscale_image(self, graph, image):
-        if self.detail is None or self.detail.is_noop():
-            return image
-
-        else:
-            crop = self.image_crop()
-
-            return graph.node(
-                "ImageScale",
-                image=image,
-                width=crop.width(),
-                height=crop.height(),
-                crop="center",
-                upscale_method="area",
-            ).out(0)
 
 
     def repeat_latent(self, graph, latent):
@@ -258,50 +302,78 @@ class ProcessImage:
             ).out(0)
 
 
-    def crop_mask(self, graph, mask):
-        if mask is not None and self.crop is not None:
-            mask = self.crop.apply_to_mask(graph, mask)
+    def apply_to_image(self, graph, image):
+        # TODO resize the image to self.bounds before cropping
+        if self.snapped_crop != self.bounds:
+            image = self.snapped_crop.crop_image(graph, image)
+
+        if self.resized_size != self.snapped_crop.size():
+            image = self.resized_size.resize_image(graph, image, self.scale_method)
+
+        return image
+
+
+    def apply_to_mask(self, graph, mask):
+        if mask is not None:
+            # TODO resize the mask to self.bounds before cropping
+            if self.snapped_crop != self.bounds:
+                mask = self.snapped_crop.crop_mask(graph, mask)
+
+            if self.resized_size != self.snapped_crop.size():
+                mask = self.resized_size.resize_mask(graph, mask, self.scale_method)
 
         return mask
 
 
-    def resize_mask(self, graph, mask):
-        if mask is not None and self.detail is not None:
-            mask = self.detail.apply_to_mask(graph, mask)
+    def downscale_image(self, graph, image):
+        if self.resized_size != self.snapped_crop.size():
+            image = self.snapped_crop.size().resize_image(graph, image, DOWNSCALE_METHOD)
+
+        if self.snapped_crop != self.crop:
+            image = self.snapped_crop.relative_to_parent(self.crop).crop_image(graph, image)
+
+        return image
+
+
+    def crop_mask(self, graph, mask):
+        if mask is not None:
+            if self.crop != self.bounds:
+                mask = self.crop.crop_mask(graph, mask)
 
         return mask
 
 
     def composite_image(self, graph, original_image, downscaled_image, cropped_mask):
-        if cropped_mask is None and self.crop is None:
+        if cropped_mask is None and self.crop == self.bounds:
             return downscaled_image
 
         else:
-            image_crop = self.image_crop()
-
             return graph.node(
                 "ImageCompositeMasked",
                 destination=self.repeat_image(graph, original_image),
                 source=downscaled_image,
                 mask=cropped_mask,
-                x=image_crop.left,
-                y=image_crop.top,
+                x=self.crop.left,
+                y=self.crop.top,
                 resize_source=False,
             ).out(0)
 
 
     def region_to_crop(self, region):
-        left = region.x.evaluate_int(self.width)
-        right = left + region.width.evaluate_int(self.width)
+        width = self.bounds.width()
+        height = self.bounds.height()
 
-        top = region.y.evaluate_int(self.height)
-        bottom = top + region.height.evaluate_int(self.height)
+        left = region.x.evaluate_int(width)
+        right = left + region.width.evaluate_int(width)
 
-        (x_feather, y_feather) = region.evaluate_feather(self.width, self.height)
+        top = region.y.evaluate_int(height)
+        bottom = top + region.height.evaluate_int(height)
+
+        (x_feather, y_feather) = region.evaluate_feather(width, height)
 
         crop = Crop(left, right, top, bottom).pad(x_feather, y_feather)
 
-        clamped = crop.clamp_to_parent(self.image_crop())
+        clamped = crop.clamp_to_parent(self.crop)
 
         if clamped.width() == 0 or clamped.height() == 0:
             return None
@@ -311,13 +383,11 @@ class ProcessImage:
 
     def cropped_mask(self, graph):
         if self.cached_crop_mask is None:
-            image_crop = self.image_crop()
-
             self.cached_crop_mask = graph.node(
                 "SolidMask",
                 value=0.0,
-                width=image_crop.width(),
-                height=image_crop.height(),
+                width=self.snapped_crop.width(),
+                height=self.snapped_crop.height(),
             ).out(0)
 
         return self.cached_crop_mask
@@ -339,16 +409,13 @@ class ProcessImage:
 
 
     def apply_set_area(self, graph, region, crop, conditioning):
-        cropped_mask = self.cropped_mask()
-        image_crop = self.image_crop()
-
-        (x_feather, y_feather) = region.evaluate_feather(self.width, self.height)
+        (x_feather, y_feather) = region.evaluate_feather(self.bounds.width(), self.bounds.height())
 
         # Crop which contains only solid white pixels
-        solid_crop = crop.pad(-x_feather, -y_feather).clamp_to_parent(image_crop)
+        solid_crop = crop.pad(-x_feather, -y_feather).clamp_to_parent(self.snapped_crop)
 
         # Region occupies the entire image, no need for masking
-        if solid_crop == image_crop and region.strength == 1.0:
+        if solid_crop == self.snapped_crop and region.strength == 1.0:
             return conditioning
 
         else:
@@ -362,8 +429,9 @@ class ProcessImage:
             if x_feather > 0 or y_feather > 0:
                 mask = graph.node("FeatherMask", mask=mask, left=x_feather, top=y_feather, right=x_feather, bottom=y_feather).out(0)
 
-            clamped = crop.clamp_to_parent(image_crop)
+            clamped = crop.clamp_to_parent(self.snapped_crop)
 
+            # Region must be inside of the crop
             assert clamped.width() > 0
             assert clamped.height() > 0
 
@@ -383,13 +451,13 @@ class ProcessImage:
                     height=clamped.height(),
                 ).out(0)
 
-            if clamped != image_crop:
+            if clamped != self.snapped_crop:
                 mask = graph.node(
                     "MaskComposite",
-                    destination=cropped_mask,
+                    destination=self.cropped_mask(),
                     source=mask,
-                    x=clamped.left - image_crop.left,
-                    y=clamped.top - image_crop.top,
+                    x=clamped.left - self.snapped_crop.left,
+                    y=clamped.top - self.snapped_crop.top,
                     operation="add",
                 ).out(0)
 

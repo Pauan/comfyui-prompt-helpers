@@ -40,7 +40,8 @@ class EncodeRegion(EncodePrompts):
 
     def isolated_crop(self, process):
         if self.region.isolated:
-            return self.crop.clamp_to_parent(process.image_crop())
+            # TODO don't rely on internal properties of process
+            return self.crop.clamp_to_parent(process.bounds)
         else:
             return None
 
@@ -182,7 +183,7 @@ class EncodeRegions:
             mask = mask_regions.get(chunk.mask_region.name, None)
 
             if mask is not None:
-                mask = process.crop_mask(graph, mask)
+                mask = process.apply_to_mask(graph, mask)
 
                 return self.add_region(EncodeMaskRegion(chunk.mask_region, mask))
 
@@ -928,14 +929,12 @@ class EZGenerate(io.ComfyNode):
 
         (model, clip, positive, negative) = cls.process_json(graph, kwargs["model"], kwargs["clip"], kwargs["vae"], prompt["json"], prompt["masks"], process, control_net)
 
-        cropped_mask = process.crop_mask(graph, original_mask)
-
         if image["image_weight"] == 0.0:
             repeat_latent_batch = process.empty_latent(graph)
 
         else:
             resized_image = process.apply_to_image(graph, original_image)
-            resized_mask = process.resize_mask(graph, cropped_mask)
+            resized_mask = process.apply_to_mask(graph, original_mask)
 
             if resized_mask is not None:
                 # VAEEncodeForInpaint doesn't support image_weight, so we use InpaintModelConditioning instead
@@ -980,6 +979,8 @@ class EZGenerate(io.ComfyNode):
         )
 
         downscaled_image = process.downscale_image(graph, vae_decode.out(0))
+
+        cropped_mask = process.crop_mask(graph, original_mask)
 
         # ComfyUI changes the image even outside of the mask, so we overwrite the image
         # to guarantee that *only* the masked area will be changed
