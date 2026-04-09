@@ -253,7 +253,7 @@ class ProcessImage:
         self.detail = detail
         self.batch_size = batch_size
         self.select_index = select_index
-        self.cached_crop_mask = None
+        self.cached_bounds_mask = None
 
 
     def with_crop(self, crop):
@@ -381,16 +381,16 @@ class ProcessImage:
             return crop
 
 
-    def cropped_mask(self, graph):
-        if self.cached_crop_mask is None:
-            self.cached_crop_mask = graph.node(
+    def bounds_mask(self, graph):
+        if self.cached_bounds_mask is None:
+            self.cached_bounds_mask = graph.node(
                 "SolidMask",
                 value=0.0,
-                width=self.snapped_crop.width(),
-                height=self.snapped_crop.height(),
+                width=self.bounds.width(),
+                height=self.bounds.height(),
             ).out(0)
 
-        return self.cached_crop_mask
+        return self.cached_bounds_mask
 
 
     def apply_set_mask(graph, mask, strength, isolated, conditioning):
@@ -412,10 +412,10 @@ class ProcessImage:
         (x_feather, y_feather) = region.evaluate_feather(self.bounds.width(), self.bounds.height())
 
         # Crop which contains only solid white pixels
-        solid_crop = crop.pad(-x_feather, -y_feather).clamp_to_parent(self.snapped_crop)
+        solid_crop = crop.pad(-x_feather, -y_feather).clamp_to_parent(self.crop)
 
         # Region occupies the entire image, no need for masking
-        if solid_crop == self.snapped_crop and region.strength == 1.0:
+        if solid_crop == self.crop and region.strength == 1.0:
             return conditioning
 
         else:
@@ -429,36 +429,17 @@ class ProcessImage:
             if x_feather > 0 or y_feather > 0:
                 mask = graph.node("FeatherMask", mask=mask, left=x_feather, top=y_feather, right=x_feather, bottom=y_feather).out(0)
 
-            clamped = crop.clamp_to_parent(self.snapped_crop)
-
-            # Region must be inside of the crop
-            assert clamped.width() > 0
-            assert clamped.height() > 0
-
-            if clamped != crop:
-                x = clamped.left - crop.left
-                y = clamped.top - crop.top
-
-                assert x >= 0
-                assert y >= 0
-
-                mask = graph.node(
-                    "CropMask",
-                    mask=mask,
-                    x=x,
-                    y=y,
-                    width=clamped.width(),
-                    height=clamped.height(),
-                ).out(0)
-
-            if clamped != self.snapped_crop:
+            if crop != self.bounds:
+                # TODO figure out a way to not composite if the region is entirely within the snapped_crop
                 mask = graph.node(
                     "MaskComposite",
-                    destination=self.cropped_mask(),
+                    destination=self.bounds_mask(),
                     source=mask,
-                    x=clamped.left - self.snapped_crop.left,
-                    y=clamped.top - self.snapped_crop.top,
+                    x=crop.left,
+                    y=crop.top,
                     operation="add",
                 ).out(0)
+
+            mask = self.apply_to_mask(graph, mask)
 
             return ProcessImage.apply_set_mask(graph, mask, region.strength, region.isolated, conditioning)

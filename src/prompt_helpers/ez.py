@@ -41,6 +41,7 @@ class EncodeRegion(EncodePrompts):
     def isolated_crop(self, process):
         if self.region.isolated:
             # TODO don't rely on internal properties of process
+            # TODO is this the right clamping ?
             return self.crop.clamp_to_parent(process.bounds)
         else:
             return None
