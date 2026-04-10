@@ -7,6 +7,9 @@ INCREMENT = 8
 DEFAULT_SCALE_METHOD = "lanczos"
 DOWNSCALE_METHOD = "area"
 
+# Image size where it will use VAE tiling
+VAE_TILING_THRESHOLD = 1536 * 1536
+
 
 class Size:
     def __init__(self, width, height):
@@ -240,7 +243,7 @@ class ProcessImage:
 
         # TODO figure out a better solution for allowing crops outside of the bounds
         assert self.crop == self.crop.clamp_to_parent(self.bounds)
-        assert self.snapped_crop == self.snapped_crop.clamp_to_bounds(self.bounds)
+        assert self.snapped_crop == self.snapped_crop.clamp_to_parent(self.bounds)
 
         # Resized size of the cropped part
         if detail is None:
@@ -258,6 +261,20 @@ class ProcessImage:
 
     def with_crop(self, crop):
         return ProcessImage(crop, self.detail, self.bounds.width(), self.bounds.height(), self.batch_size, self.select_index)
+
+
+    def vae_decode(self, graph, vae, latent):
+        if (self.resized_size.width * self.resized_size.height) > VAE_TILING_THRESHOLD:
+            return graph.node("VAEDecodeTiled", samples=latent, vae=vae, tile_size=1024, overlap=64, temporal_size=64, temporal_overlap=8).out(0)
+        else:
+            return graph.node("VAEDecode", samples=latent, vae=vae).out(0)
+
+
+    def vae_encode(self, graph, vae, image):
+        if (self.resized_size.width * self.resized_size.height) > VAE_TILING_THRESHOLD:
+            return graph.node("VAEEncodeTiled", pixels=image, vae=vae, tile_size=1024, overlap=64, temporal_size=64, temporal_overlap=8).out(0)
+        else:
+            return graph.node("VAEEncode", pixels=image, vae=vae).out(0)
 
 
     def empty_latent(self, graph):

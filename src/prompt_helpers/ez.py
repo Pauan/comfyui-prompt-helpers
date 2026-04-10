@@ -896,13 +896,9 @@ class EZGenerate(io.ComfyNode):
             denoise=1.0,
         )
 
-        vae_decode = graph.node(
-            "VAEDecode",
-            samples=sampler,
-            vae=kwargs["vae"],
-        )
+        decoded = process.vae_decode(graph, kwargs["vae"], sampler)
 
-        resized = process.downscale_image(graph, vae_decode.out(0))
+        resized = process.downscale_image(graph, decoded)
 
         return io.NodeOutput(
             resized,
@@ -955,7 +951,7 @@ class EZGenerate(io.ComfyNode):
                 latent_image = inpaint_model_conditioning.out(2)
 
             else:
-                latent_image = graph.node("VAEEncode", pixels=resized_image, vae=kwargs["vae"]).out(0)
+                latent_image = process.vae_encode(graph, kwargs["vae"], resized_image)
 
             repeat_latent_batch = process.repeat_latent(graph, latent_image)
 
@@ -974,13 +970,9 @@ class EZGenerate(io.ComfyNode):
             denoise=(1.0 - image["image_weight"]),
         )
 
-        vae_decode = graph.node(
-            "VAEDecode",
-            samples=sampler,
-            vae=kwargs["vae"],
-        )
+        decoded = process.vae_decode(graph, kwargs["vae"], sampler)
 
-        downscaled_image = process.downscale_image(graph, vae_decode.out(0))
+        downscaled_image = process.downscale_image(graph, decoded)
 
         cropped_mask = process.crop_mask(graph, original_mask)
 
@@ -1033,7 +1025,7 @@ class EZGenerate(io.ComfyNode):
                 height=tile.crop.height(),
             )
 
-            vae_encode = graph.node("VAEEncode", pixels=cropped.out(0), vae=kwargs["vae"])
+            vae_encode = process.vae_encode(graph, kwargs["vae"], cropped.out(0))
 
             run_sampler = cls.sampler(
                 graph=graph,
@@ -1046,15 +1038,11 @@ class EZGenerate(io.ComfyNode):
                 scheduler=sampler["scheduler"],
                 positive=positive,
                 negative=negative,
-                latent_image=vae_encode.out(0),
+                latent_image=vae_encode,
                 denoise=(1.0 - image["image_weight"]),
             )
 
-            vae_decode = graph.node(
-                "VAEDecode",
-                samples=run_sampler,
-                vae=kwargs["vae"],
-            )
+            vae_decode = process.vae_decode(graph, kwargs["vae"], run_sampler)
 
             tile_mask = graph.node("SolidMask", value=0.0, width=tile.crop.width(), height=tile.crop.height())
 
@@ -1071,7 +1059,7 @@ class EZGenerate(io.ComfyNode):
                 y=(tile.mask.top - tile.crop.top),
             )
 
-            tiles.append((tile, vae_decode.out(0), mask.out(0)))
+            tiles.append((tile, vae_decode, mask.out(0)))
 
         composited = graph.node("EmptyImage", batch_size=1, color=0, width=image_width, height=image_height).out(0)
 
