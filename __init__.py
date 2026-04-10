@@ -42,6 +42,9 @@ class PromptHelpers(ComfyExtension):
             ez.EZGenerateSave,
             ez.EZNotify,
 
+            # mask
+            ez.MaskToBounds,
+
             # hidden
             prompt.ApplyLoras,
         ]

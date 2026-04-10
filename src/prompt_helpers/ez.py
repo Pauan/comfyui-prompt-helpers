@@ -1,6 +1,7 @@
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
 import comfy
+import torch
 import folder_paths
 import datetime
 import desktop_notifier
@@ -1191,3 +1192,48 @@ class EZNotify(io.ComfyNode):
         )
 
         return io.NodeOutput()
+
+
+class MaskToBounds(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="prompt_helpers: MaskToBounds",
+            display_name="Mask to Bounds",
+            category="mask",
+            description="Calculates the bounding box of a mask, based on which pixels aren't black.",
+            inputs=[
+                io.Mask.Input("mask"),
+            ],
+            outputs=[
+                io.Int.Output(display_name="x"),
+                io.Int.Output(display_name="y"),
+                io.Int.Output(display_name="width"),
+                io.Int.Output(display_name="height"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, mask) -> io.NodeOutput:
+        # TODO verify that the 3rd dimension can never break this
+        _, ys, xs = torch.nonzero(mask, as_tuple=True)
+
+        if xs.numel() == 0:
+            return io.NodeOutput(0, 0, 0, 0)
+
+        else:
+            (x_min, x_max) = torch.aminmax(xs)
+            (y_min, y_max) = torch.aminmax(ys)
+
+            x_min = x_min.item()
+            x_max = x_max.item() + 1
+
+            y_min = y_min.item()
+            y_max = y_max.item() + 1
+
+            return io.NodeOutput(
+                x_min,
+                y_min,
+                x_max - x_min,
+                y_max - y_min,
+            )
